@@ -82,10 +82,12 @@ test/                 node:test suite + stub-pi executable fixture (offline)
 - [x] G2 Method text: prompts.ts (pi surface docs, INV/DOM/generalize templates, evidence
       boundary, leak guard) + proposer.ts (propose/compose, retries, audit) — 11 tests;
       suite 25/25; verify 7/7 PASS (adjudicated: odd/ doc diff is parent bookkeeping)
-- [ ] G3 Engine: selection.ts + recursion.ts (parallel/sequential, stages, ledger) +
-      library.ts + judge.ts
-- [ ] G4 Surface: extension.ts commands + h2_run tool + config.ts + report.ts + README +
-      full-suite green
+- [x] G3 Engine: selection.ts + recursion.ts (parallel/sequential, stages, ledger) +
+      library.ts + judge.ts — 24 tests; suite 49/49; verify 8/8 (1 docstring sub-claim
+      fixed inline: first-step adoption rule now explicit); lens threading confirmed
+      byte-identical on undefined
+- [x] G4 Surface: extension.ts commands + h2_run tool + config.ts + report.ts + README +
+      full-suite green — 31 tests; suite 80/80; verify 8/8 READY_TO_COMMIT, no blockers
 - [ ] G5 (user-gated, model cost) live smoke: /h2:init + one /h2:run k=1 on a toy task
 
 Constraints: Conventional Commits per work unit; tests alongside code in every group;
@@ -106,7 +108,22 @@ workers: Python core at
   (2) `pi.extensions` manifest key removed until G4 lands src/extension.ts (every commit
   stays loadable); (3) fingerprint stays sha256 — Python runmark.py uses sha1, so
   fingerprints are NOT cross-language comparable (documented, not a requirement).
-- G2 commits: (pending ids — feat(prompts), feat(proposer), docs evidence).
+- G1 commits on feat/core-method: bbf4282 (docs plan), 3e7178d (chore scaffold),
+  4ba8ba4 (feat tree), 72140b1 (feat runner), bb56318 (feat channel). Suite 14/14 green
+  after commits.
+- G2 commits: 66c1934 (docs outcomes), 98f95a5 (feat prompts), bc07cef (feat proposer).
+  Suite 25/25 green after commits.
 - G2 verification: 25/25 green; semantics parity confirmed against prompts.py (INV/DOM/
   GENERALIZE/_KEEP_BASE); leak guard clean in all task-facing text; retry budget exactly 2;
   no OpenCode residue in SURFACE_DOC (single JSDoc port note only, developer-facing).
+- G4 commits: b49fc8e (config), 7013f00 (report), b501fe0 (extension), caac92b (pi
+  manifest), eda76ff (README). Suite 80/80 after commits. Notable accepted deviations:
+  registerTool follows pi's real ToolDefinition API; h2:adopt replaces with a one-time
+  materialized backup (writeTree's ""-skip would lose deletions in backups); colon
+  command names verified against pi's dispatch code; runHarness archives stages.json per
+  run (the global ledger carries no run attribution).
+- G3 commits: 52fec03 (selection), dcee823 (judge), 61a72dd (library), fd2009b
+  (recursion + lens). Suite 49/49 after commits. Accepted documented behaviors:
+  sequential first step adopts any graded candidate over the unjudged base (adoption
+  into the live harness remains a user decision at the command layer); reflect clips
+  tree listings at 30k chars; library rename-rollback is code-read verified only.

@@ -8,5 +8,8 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "pi": {
+    "extensions": ["./src/extension.ts"]
   }
 }

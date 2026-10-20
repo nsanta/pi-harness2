@@ -198,6 +198,25 @@ Two hard rules:
   confirm X covers each of A, B, C" beats a paragraph of exposition.`,
 );
 
+/** The focus note appended when the mission is restricted to the general lens: the same
+ * INVARIANT_EDIT discipline, named so the model knows the other dimension is out of scope. */
+const GENERAL_LENS = tidy(
+  `# THIS ROUND'S LENS: GENERAL
+
+Direct broadly-applicable, root-cause edits: changes to HOW the agent works that would help
+on most tasks of this kind, not only on the material quoted above. Domain-specific
+requirements are out of scope this round.`,
+);
+
+/** The focus note appended when the mission is restricted to the domain lens. */
+const DOMAIN_LENS = tidy(
+  `# THIS ROUND'S LENS: DOMAIN
+
+Direct domain-specific requirements: the practitioner knowledge, required deliverable
+structure and checkable rules this kind of work demands. Procedure-only edits are out of
+scope this round.`,
+);
+
 /** The output contract: one JSON object; omit-is-inherited edits, "" deletes, surface paths. */
 const OUTPUT_CONTRACT = tidy(
   `# OUTPUT CONTRACT
@@ -227,6 +246,9 @@ export interface ProposeMissionInput {
   candidates: Array<{ label: string; trajectory: string }>;
   /** Optional experience text from earlier rounds, embedded after the candidates. */
   experience?: string;
+  /** Restrict the edit templates to one dimension: "general" keeps only INVARIANT_EDIT,
+   * "domain" only DOMAIN_EDIT. Undefined keeps both templates (historical behavior). */
+  lens?: "general" | "domain";
 }
 
 /** Build the proposer mission. The sections embed, in order: the work, the evidence boundary,
@@ -249,7 +271,10 @@ export function buildProposeMission(input: ProposeMissionInput): string {
   ];
   const experience = experienceSection(input.experience);
   if (experience) parts.push(experience);
-  parts.push(INVARIANT_EDIT, DOMAIN_EDIT, OUTPUT_CONTRACT);
+  if (input.lens === "general") parts.push(INVARIANT_EDIT, GENERAL_LENS);
+  else if (input.lens === "domain") parts.push(DOMAIN_EDIT, DOMAIN_LENS);
+  else parts.push(INVARIANT_EDIT, DOMAIN_EDIT);
+  parts.push(OUTPUT_CONTRACT);
   return tidy(parts.join("\n\n"));
 }
 

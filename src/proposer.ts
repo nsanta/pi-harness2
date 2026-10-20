@@ -37,7 +37,8 @@ export class ProposerError extends Error {
 }
 
 /** Everything propose() needs: the mission input plus channel options. `channel` defaults to
- * callChannel; tests inject a fake to stay offline. */
+ * callChannel; tests inject a fake to stay offline. The optional `lens` threads through this
+ * intersection untouched into buildProposeMission. */
 export type ProposeInput = ProposeMissionInput & {
   /** Model pattern handed to the channel. */
   model: string;

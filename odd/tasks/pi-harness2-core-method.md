@@ -76,11 +76,12 @@ test/                 node:test suite + stub-pi executable fixture (offline)
 
 ## Tasks
 
-- [ ] G1 Foundation: scaffold package + types + tree.ts + runner.ts + channel.ts;
+- [x] G1 Foundation: scaffold package + types + tree.ts + runner.ts + channel.ts;
       node:test suite with stub-pi fixture (argv contract, tree validation, JSONL→grammar,
-      channel JSON repair)
-- [ ] G2 Method text: prompts.ts (pi surface docs, INV/DOM/generalize templates, evidence
-      boundary, leak guard) + proposer.ts (propose/compose, retries, audit)
+      channel JSON repair) — 14 tests green; verify agent 7/7 PASS, READY_TO_COMMIT
+- [x] G2 Method text: prompts.ts (pi surface docs, INV/DOM/generalize templates, evidence
+      boundary, leak guard) + proposer.ts (propose/compose, retries, audit) — 11 tests;
+      suite 25/25; verify 7/7 PASS (adjudicated: odd/ doc diff is parent bookkeeping)
 - [ ] G3 Engine: selection.ts + recursion.ts (parallel/sequential, stages, ledger) +
       library.ts + judge.ts
 - [ ] G4 Surface: extension.ts commands + h2_run tool + config.ts + report.ts + README +
@@ -98,4 +99,14 @@ workers: Python core at
 
 ## Evidence log
 
-- (pending — record commit ids per closed group)
+- G1 verification (gentle-ai-verify): 7/7 PASS. Compat contracts byte-match pi.py
+  (argv, grammar incl. TRUNC_FMT, PI_SURFACE constants + stub prose); zero-dep proven;
+  kill-on-timeout is real SIGTERM→SIGKILL; parsePiJson never throws.
+- Parent decisions on verifier flags: (1) odd/ doc committed as its own docs commit;
+  (2) `pi.extensions` manifest key removed until G4 lands src/extension.ts (every commit
+  stays loadable); (3) fingerprint stays sha256 — Python runmark.py uses sha1, so
+  fingerprints are NOT cross-language comparable (documented, not a requirement).
+- G2 commits: (pending ids — feat(prompts), feat(proposer), docs evidence).
+- G2 verification: 25/25 green; semantics parity confirmed against prompts.py (INV/DOM/
+  GENERALIZE/_KEEP_BASE); leak guard clean in all task-facing text; retry budget exactly 2;
+  no OpenCode residue in SURFACE_DOC (single JSDoc port note only, developer-facing).

@@ -1,0 +1,570 @@
+/** The harness² pi extension surface: five commands (h2:init, h2:run, h2:adopt, h2:status,
+ * h2:report) and one model-callable tool (h2_run), all funnelling through the injectable
+ * runHarness() flow. Every handler catches its own failures and reports them through
+ * ctx.ui.notify(..., "error") — a command never throws raw into the session. All state
+ * lives under one state directory (<cwd>/.harness2 by default, overridable via options).
+ *
+ * Command names use colons (h2:init, not h2_init): pi dispatches extension commands by
+ * exact invocationName match with no character restrictions, and itself generates colon
+ * names (built-in /skill:<name> commands, duplicate disambiguation as name:2). */
+
+import { randomBytes } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DEFAULTS, DEFAULT_STATE_DIR, loadConfig, type HarnessConfig } from "./config.ts";
+import { Library } from "./library.ts";
+import { renderRunReport } from "./report.ts";
+import { runMode as runModeReal, type ModeResult, type Stage } from "./recursion.ts";
+import { clip } from "./runner.ts";
+import {
+  diffTrees,
+  normalizeRel,
+  readTree as readTreeReal,
+  writeTree as writeTreeReal,
+} from "./tree.ts";
+import type { Tree } from "./types.ts";
+
+/** Everything the run flow needs from the outside; each seam defaults to the real
+ * implementation so production code calls runHarness(input) and tests inject fakes. */
+export interface HarnessDeps {
+  loadConfig: (stateDir: string) => HarnessConfig;
+  readTree: typeof readTreeReal;
+  runMode: typeof runModeReal;
+  writeTree: typeof writeTreeReal;
+  renderRunReport: typeof renderRunReport;
+  newRunId: () => string;
+}
+
+function defaultDeps(): HarnessDeps {
+  return {
+    loadConfig,
+    readTree: readTreeReal,
+    runMode: runModeReal,
+    writeTree: writeTreeReal,
+    renderRunReport,
+    newRunId,
+  };
+}
+
+/** Run ids are r-<yyyymmdd>-<4 hex>. recursion.ts's probe ids differ on purpose: probe ids
+ * name their slot and exist only inside one run, while these name archived runs. */
+export function newRunId(now: Date = new Date()): string {
+  const p = (n: number): string => String(n).padStart(2, "0");
+  const day = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}`;
+  return `r-${day}-${randomBytes(2).toString("hex")}`;
+}
+
+export interface RunHarnessInput {
+  task: string;
+  /** Overrides config.k when set. */
+  k?: number;
+  /** Overrides config.mode when set. */
+  mode?: "parallel" | "sequential";
+  /** State root; defaults to DEFAULT_STATE_DIR. */
+  stateDir?: string;
+}
+
+export interface RunHarnessOutcome {
+  runId: string;
+  ok: boolean;
+  mode: "parallel" | "sequential";
+  k: number;
+  best: {label: string; score: number} | null;
+  fellBack: string[];
+  report: string;
+  reportPath: string;
+  /** Directory holding the adopted-candidate final tree; null when the run produced none. */
+  finalDir: string | null;
+  finalTreeFiles: number;
+}
+
+/** One full propose–probe–compose run against the harness tree at <stateDir>/harness:
+ * archives the final tree (runs/<runid>/final/), the report (report.md) and the stage
+ * record (stages.json, the h2:report source of truth — the global ledger has no run
+ * attribution). Throws when the harness tree is missing; callers report that. */
+export async function runHarness(
+  input: RunHarnessInput,
+  overrides: Partial<HarnessDeps> = {},
+): Promise<RunHarnessOutcome> {
+  const deps: HarnessDeps = {...defaultDeps(), ...overrides};
+  const stateDir = input.stateDir ?? DEFAULT_STATE_DIR;
+  const harnessDir = join(stateDir, "harness");
+  const baseTree = deps.readTree(harnessDir);
+  if (Object.keys(baseTree).length === 0) {
+    throw new Error(`no harness tree at ${harnessDir}; run h2:init first`);
+  }
+  const config = deps.loadConfig(stateDir);
+  const mode = input.mode ?? config.mode;
+  const k = input.k ?? config.k;
+  const runId = deps.newRunId();
+  const result = await deps.runMode(mode, {
+    task: input.task,
+    k,
+    baseTree,
+    stateDir,
+    models: {channel: config.channelModel},
+    wallSeconds: config.wallSeconds,
+    piBin: config.piBin,
+  });
+  const runDir = join(stateDir, "runs", runId);
+  mkdirSync(runDir, {recursive: true});
+  let finalDir: string | null = null;
+  let finalTreeFiles = 0;
+  if (result.finalTree !== null) {
+    finalDir = join(runDir, "final");
+    deps.writeTree(result.finalTree, finalDir);
+    finalTreeFiles = Object.values(result.finalTree).filter((c) => c !== "").length;
+  }
+  const report = deps.renderRunReport({
+    runId,
+    mode,
+    k,
+    stages: result.stages,
+    result,
+    task: input.task,
+    baseTree,
+  });
+  const reportPath = join(runDir, "report.md");
+  writeFileSync(reportPath, report, "utf8");
+  const archive = {
+    task: input.task,
+    mode,
+    k,
+    ok: result.ok,
+    best: result.best,
+    fellBack: result.fellBack,
+    deliverable: result.deliverable,
+    stages: result.stages,
+    finalTree: result.finalTree,
+  };
+  writeFileSync(join(runDir, "stages.json"), `${JSON.stringify(archive, null, 2)}\n`, "utf8");
+  return {
+    runId,
+    ok: result.ok,
+    mode,
+    k,
+    best: result.best,
+    fellBack: result.fellBack,
+    report,
+    reportPath,
+    finalDir,
+    finalTreeFiles,
+  };
+}
+
+/** Files seeded by h2:init; existing files are never overwritten. */
+const SEED_FILES: Array<[rel: string, content: string]> = [
+  [
+    "systemprompt.md",
+    "You are a careful professional assistant. " +
+      "Work toward the deliverable; verify before claiming done.",
+  ],
+  [
+    "guardrails.md",
+    "- Never fabricate sources, ids, or citations.\n" +
+      "- Prefer deterministic helper scripts over repeated manual steps.\n",
+  ],
+  ["LongTermMEMORY.md", ""],
+  [join("tool_descriptions", "tool_guidance.md"), ""],
+];
+
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** Write every tree entry as a real file, INCLUDING empty ones — unlike tree.ts's
+ * writeTree, whose ""-is-deletion contract must not apply to backups and seeds. */
+function materializeTree(tree: Tree, dest: string): void {
+  for (const [rel, content] of Object.entries(tree)) {
+    const target = join(dest, ...normalizeRel(rel).split("/"));
+    mkdirSync(dirname(target), {recursive: true});
+    writeFileSync(target, content, "utf8");
+  }
+}
+
+/** Structural subset of ExtensionCommandContext that handlers actually use; keeps the
+ * command implementations testable against a plain fake. */
+interface Notifier {
+  ui: {notify(message: string, level?: "info" | "warning" | "error"): void};
+}
+
+/** Reports a finished run: the full report when it fits in a notification, else a short
+ * summary plus the report path. A completed-but-fell-back run warns instead of claiming
+ * success. */
+const REPORT_NOTIFY_MAX = 1200;
+
+function summarizeOutcome(outcome: RunHarnessOutcome): string {
+  const best = outcome.best ? `${outcome.best.label} (score ${outcome.best.score})` : "none";
+  return (
+    `harness² run ${outcome.runId} finished: ${outcome.ok ? "ok" : "fell back"}; best: ${best}; ` +
+    `${outcome.finalTreeFiles} file(s) in the final tree`
+  );
+}
+
+function notifyOutcome(ctx: Notifier, outcome: RunHarnessOutcome): void {
+  const level = outcome.ok ? "info" : "warning";
+  if (outcome.report.length <= REPORT_NOTIFY_MAX) {
+    ctx.ui.notify(outcome.report, level);
+    return;
+  }
+  ctx.ui.notify(`${summarizeOutcome(outcome)}\nReport: ${outcome.reportPath}`, level);
+}
+
+async function cmdInit(stateDir: string, ctx: Notifier): Promise<void> {
+  mkdirSync(stateDir, {recursive: true});
+  const created: string[] = [];
+  const skipped: string[] = [];
+  const seedIn = (rel: string, content: string): void => {
+    const target = join(stateDir, "harness", rel);
+    if (existsSync(target)) {
+      skipped.push(target);
+      return;
+    }
+    mkdirSync(dirname(target), {recursive: true});
+    writeFileSync(target, content, "utf8");
+    created.push(target);
+  };
+  for (const [rel, content] of SEED_FILES) seedIn(rel, content);
+  const configPath = join(stateDir, "config.json");
+  if (existsSync(configPath)) skipped.push(configPath);
+  else {
+    writeFileSync(configPath, `${JSON.stringify(CONFIG_DEFAULTS, null, 2)}\n`, "utf8");
+    created.push(configPath);
+  }
+  const createdList = created.map((p) => `- ${p}`).join("\n");
+  const skippedList = skipped.map((p) => `- ${p}`).join("\n");
+  ctx.ui.notify(
+    `harness² state at ${stateDir}\n` +
+      `created: ${created.length === 0 ? "nothing" : `\n${createdList}`}\n` +
+      `skipped (already present, never overwritten): ` +
+      `${skipped.length === 0 ? "nothing" : `\n${skippedList}`}`,
+    "info",
+  );
+}
+
+export interface ParsedRunArgs {
+  task: string;
+  k?: number;
+  mode?: "parallel" | "sequential";
+}
+
+/** Tokenizes a command tail: quoted segments stay one token, flags take the next token,
+ * everything else joins into the task. */
+export function parseRunArgs(raw: string): ParsedRunArgs {
+  const tokens = [...raw.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2] ?? "");
+  const task: string[] = [];
+  let k: number | undefined;
+  let mode: ParsedRunArgs["mode"];
+  const value = (flag: string): string => {
+    const next = tokens.shift();
+    if (next === undefined) throw new Error(`${flag} expects a value`);
+    return next;
+  };
+  while (tokens.length > 0) {
+    const tok = tokens.shift()!;
+    if (tok === "--k") {
+      const raw = value("--k");
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new Error(`--k expects an integer > 0, got ${JSON.stringify(raw)}`);
+      }
+      k = n;
+    } else if (tok === "--mode") {
+      const v = value("--mode");
+      if (v !== "parallel" && v !== "sequential") {
+        throw new Error(`--mode expects "parallel" or "sequential", got ${JSON.stringify(v)}`);
+      }
+      mode = v;
+    } else {
+      task.push(tok);
+    }
+  }
+  const joined = task.join(" ").trim();
+  if (!joined) throw new Error('usage: h2:run "<task>" [--k N] [--mode parallel|sequential]');
+  return {task: joined, k, mode};
+}
+
+async function cmdRun(
+  stateDir: string,
+  rawArgs: string,
+  deps: Partial<HarnessDeps>,
+  ctx: Notifier,
+): Promise<void> {
+  const parsed = parseRunArgs(rawArgs);
+  const parts = [`harness²: starting run: "${parsed.task}"`];
+  if (parsed.k !== undefined) parts.push(`k=${parsed.k}`);
+  if (parsed.mode !== undefined) parts.push(`mode=${parsed.mode}`);
+  ctx.ui.notify(parts.join(" "), "info");
+  const outcome = await runHarness(
+    {task: parsed.task, k: parsed.k, mode: parsed.mode, stateDir},
+    deps,
+  );
+  notifyOutcome(ctx, outcome);
+}
+
+/** Adopt = the run's final tree BECOMES the harness. The previous tree is backed up once
+ * (harness.bak-<runid>) and the harness is replaced, not overlaid: the composed tree is a
+ * full merge, so overlaying would resurrect files the proposal deleted. */
+async function cmdAdopt(stateDir: string, rawArgs: string, ctx: Notifier): Promise<void> {
+  const runId = rawArgs.trim().replace(/^"|"$/g, "").trim();
+  if (!runId) throw new Error('usage: h2:adopt "<runid>"');
+  const finalDir = join(stateDir, "runs", runId, "final");
+  const after = readTreeReal(finalDir);
+  if (Object.keys(after).length === 0) {
+    throw new Error(`no final tree for run "${runId}" at ${finalDir}; run h2:run first`);
+  }
+  const harnessDir = join(stateDir, "harness");
+  const before = readTreeReal(harnessDir);
+  const backupDir = join(stateDir, `harness.bak-${runId}`);
+  if (!existsSync(backupDir)) materializeTree(before, backupDir);
+  rmSync(harnessDir, {recursive: true, force: true});
+  writeTreeReal(after, harnessDir);
+  const changed = diffTrees(before, after);
+  const rels = Object.keys(changed);
+  if (rels.length === 0) {
+    ctx.ui.notify(
+      `adopted run ${runId}: the harness already matches the final tree; ` +
+        `previous tree kept at ${backupDir}`,
+      "info",
+    );
+    return;
+  }
+  const deleted = rels.filter((rel) => changed[rel] === "").length;
+  const added = rels.filter((rel) => changed[rel] !== "" && !(rel in before)).length;
+  const modified = rels.length - deleted - added;
+  ctx.ui.notify(
+    `adopted run ${runId}: ${rels.length} file(s) changed ` +
+      `(${added} added, ${modified} modified, ${deleted} deleted); ` +
+      `previous tree backed up at ${backupDir}`,
+    "info",
+  );
+}
+
+/** Last n JSONL lines of the ledger; [] when it does not exist yet. */
+function ledgerTail(stateDir: string, n: number): string[] {
+  const path = join(stateDir, "ledger.jsonl");
+  if (!existsSync(path)) return [];
+  const lines = readFileSync(path, "utf8").split("\n").filter((l) => l.trim() !== "");
+  return lines.slice(-n);
+}
+
+async function cmdStatus(stateDir: string, ctx: Notifier): Promise<void> {
+  const rows = ledgerTail(stateDir, 10);
+  const stageLines = rows.map((line) => {
+    try {
+      const r = JSON.parse(line) as Record<string, unknown>;
+      const cost = Number(r["costUsd"] ?? 0);
+      const detail = r["detail"] ? ` — ${clip(String(r["detail"]), 80)}` : "";
+      return `- ${String(r["stage"])}: ${r["ok"] ? "ok" : "FAIL"} ` +
+        `(${String(r["mode"])} k=${String(r["k"])}, cost ${cost.toFixed(6)})${detail}`;
+    } catch {
+      return `- (unparseable ledger line) ${clip(line, 80)}`;
+    }
+  });
+  const ledgerPart =
+    rows.length > 0
+      ? `ledger (last ${rows.length}):\n${stageLines.join("\n")}`
+      : "ledger: none yet (run h2:run)";
+  const entries = new Library(stateDir).entries().length;
+  const body = [
+    `harness² status at ${stateDir}`,
+    ledgerPart,
+    `library: ${entries} entr${entries === 1 ? "y" : "ies"}`,
+  ];
+  ctx.ui.notify(body.join("\n"), "info");
+}
+
+function latestRunId(stateDir: string): string | null {
+  const runsDir = join(stateDir, "runs");
+  if (!existsSync(runsDir)) return null;
+  let best: {id: string; mtime: number} | null = null;
+  for (const name of readdirSync(runsDir)) {
+    const st = statSync(join(runsDir, name), {throwIfNoEntry: false});
+    if (!st?.isDirectory()) continue;
+    if (best === null || st.mtimeMs > best.mtime) best = {id: name, mtime: st.mtimeMs};
+  }
+  return best?.id ?? null;
+}
+
+interface ArchivedRun {
+  task: string;
+  mode: "parallel" | "sequential";
+  k: number;
+  ok: boolean;
+  best: {label: string; score: number} | null;
+  fellBack: string[];
+  stages: Stage[];
+  finalTree: Tree | null;
+}
+
+async function cmdReport(stateDir: string, rawArgs: string, ctx: Notifier): Promise<void> {
+  const wanted = rawArgs.trim().replace(/^"|"$/g, "").trim();
+  const runId = wanted || latestRunId(stateDir);
+  if (!runId) throw new Error(`no runs under ${join(stateDir, "runs")}; run h2:run first`);
+  const runDir = join(stateDir, "runs", runId);
+  if (!existsSync(runDir)) throw new Error(`unknown run "${runId}": ${runDir} does not exist`);
+  const stagesPath = join(runDir, "stages.json");
+  let report: string;
+  let degraded = false;
+  if (existsSync(stagesPath)) {
+    const arch = JSON.parse(readFileSync(stagesPath, "utf8")) as ArchivedRun;
+    const result: ModeResult = {
+      ok: arch.ok,
+      mode: arch.mode,
+      k: arch.k,
+      stages: arch.stages,
+      finalTree: arch.finalTree,
+      best: arch.best,
+      deliverable: "",
+      fellBack: arch.fellBack,
+    };
+    report = renderRunReport({
+      runId,
+      mode: arch.mode,
+      k: arch.k,
+      stages: arch.stages,
+      result,
+      task: arch.task,
+    });
+  } else {
+    degraded = true;
+    const rows = ledgerTail(stateDir, 10);
+    const tail =
+      rows.length > 0
+        ? rows.map((l) => `- ${clip(l, 200)}`).join("\n")
+        : "(ledger is empty)";
+    report = [
+      `# harness² run ${runId}`,
+      "",
+      "No archived stage data for this run; showing the last ledger lines instead.",
+      "",
+      tail,
+      "",
+    ].join("\n");
+  }
+  const reportPath = join(runDir, "report.md");
+  writeFileSync(reportPath, report, "utf8");
+  const note = degraded ? " (degraded: ledger tail only)" : "";
+  ctx.ui.notify(
+    `harness² report for run ${runId}${note}: ${reportPath}`,
+    degraded ? "warning" : "info",
+  );
+}
+
+export interface Harness2Options {
+  /** State root override; defaults to DEFAULT_STATE_DIR (<cwd>/.harness2). */
+  stateDir?: string;
+  /** Dependency overrides threaded into every runHarness call (tests inject fakes). */
+  deps?: Partial<HarnessDeps>;
+}
+
+/** Wrap one command body so failures surface as an error notification, never a throw. */
+function guard(
+  name: string,
+  run: (args: string, ctx: Notifier) => Promise<void>,
+): (args: string, ctx: Notifier) => Promise<void> {
+  return async (args, ctx) => {
+    try {
+      await run(args, ctx);
+    } catch (e) {
+      ctx.ui.notify(`${name} failed: ${errText(e)}`, "error");
+    }
+  };
+}
+
+/** TypeBox parameter schema for h2_run, written as a plain JSON-Schema object: the package
+ * has zero runtime dependencies, so the typebox helper is not imported. */
+const RUN_TOOL_PARAMS = {
+  type: "object",
+  properties: {
+    task: {type: "string", description: "The task to adapt the harness for."},
+    k: {type: "number", description: "Slots (parallel) or steps (sequential); overrides config."},
+    mode: {type: "string", enum: ["parallel", "sequential"], description: "Run strategy."},
+  },
+  required: ["task"],
+} as const;
+
+interface RunToolParams {
+  task: string;
+  k?: number;
+  mode?: "parallel" | "sequential";
+}
+
+/** The harness² extension factory. Registering loads nothing and starts nothing; work
+ * happens inside command/tool handlers. */
+export default function harness2(pi: ExtensionAPI, options: Harness2Options = {}): void {
+  const stateDir = options.stateDir ?? DEFAULT_STATE_DIR;
+  const deps = options.deps ?? {};
+  pi.registerCommand("h2:init", {
+    description: "harness²: seed the state directory and harness tree (idempotent)",
+    handler: guard("h2:init", async (_args, ctx) => cmdInit(stateDir, ctx)),
+  });
+  pi.registerCommand("h2:run", {
+    description:
+      'harness²: run propose–probe–compose — "<task>" [--k N] [--mode parallel|sequential]',
+    handler: guard("h2:run", async (args, ctx) => cmdRun(stateDir, args, deps, ctx)),
+  });
+  pi.registerCommand("h2:adopt", {
+    description: 'harness²: adopt a run\'s final tree (backs up the old harness) — "<runid>"',
+    handler: guard("h2:adopt", async (args, ctx) => cmdAdopt(stateDir, args, ctx)),
+  });
+  pi.registerCommand("h2:status", {
+    description: "harness²: ledger tail and library size",
+    handler: guard("h2:status", async (_args, ctx) => cmdStatus(stateDir, ctx)),
+  });
+  pi.registerCommand("h2:report", {
+    description: "harness²: (re)write a run's report — [runid]",
+    handler: guard("h2:report", async (args, ctx) => cmdReport(stateDir, args, ctx)),
+  });
+  pi.registerTool({
+    name: "h2_run",
+    label: "harness² run",
+    description:
+      "Run the harness² propose–probe–compose loop on the harness tree in the state " +
+      "directory: proposes candidate harness edits, probes them headlessly, judges the " +
+      "trajectories, composes the best into a final tree, and archives report + tree. " +
+      "Returns a short summary and the report path.",
+    parameters: RUN_TOOL_PARAMS,
+    execute: async (
+      _toolCallId: string,
+      params: RunToolParams,
+      _signal: unknown,
+      _onUpdate: unknown,
+      toolCtx: unknown,
+    ) => {
+      void toolCtx;
+      try {
+        const outcome = await runHarness(
+          {task: params.task, k: params.k, mode: params.mode, stateDir},
+          deps,
+        );
+        return {
+          content: [
+            {type: "text", text: `${summarizeOutcome(outcome)}\nReport: ${outcome.reportPath}`},
+          ],
+          details: {
+            runId: outcome.runId,
+            ok: outcome.ok,
+            best: outcome.best,
+            finalTreeFiles: outcome.finalTreeFiles,
+          },
+        };
+      } catch (e) {
+        return {
+          content: [{type: "text", text: `h2_run failed: ${errText(e)}`}],
+          details: {runId: "", ok: false, best: null, finalTreeFiles: 0},
+          isError: true,
+        };
+      }
+    },
+  } as Parameters<ExtensionAPI["registerTool"]>[0]);
+}

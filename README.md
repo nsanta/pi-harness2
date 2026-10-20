@@ -5,6 +5,8 @@ The harness² method as a native pi package: instead of hand-tuning your agent's
 loop that adapts the harness for a task, remembers what worked, and lets you adopt the
 result with one command.
 
+**Full guide with a worked use case: [docs/GUIDE.md](docs/GUIDE.md).**
+
 - **Propose** — candidate edits to the harness tree, from two lenses (general and
   task-domain).
 - **Probe** — each candidate runs headlessly on your task in a throwaway workspace.

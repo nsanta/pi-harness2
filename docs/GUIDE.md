@@ -36,10 +36,13 @@ and remembers what worked.
 ## Install
 
 ```bash
-# from a local checkout
-pi install /home/you/projects/pi-harness2
-# or from git
-pi install git:github.com/you/pi-harness2@v0.1.0
+# from GitHub (default branch)
+pi install https://github.com/nsanta/pi-harness2
+# or pinned to a tag/commit via the git scheme
+pi install git:github.com/nsanta/pi-harness2@<ref>
+
+# for development: from a local checkout (loaded in place, not copied)
+pi install ./pi-harness2
 ```
 
 Requirements: pi ≥ 1.3 on PATH with a configured provider; Node ≥ 22. The package has

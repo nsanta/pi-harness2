@@ -18,8 +18,13 @@ result with one command.
 ## Install
 
 ```bash
-pi install /path/to/pi-harness2        # local checkout
-pi install git+https://…/pi-harness2   # or a git URL
+# from GitHub (default branch)
+pi install https://github.com/nsanta/pi-harness2
+# or pinned to a tag/commit via the git scheme
+pi install git:github.com/nsanta/pi-harness2@<ref>
+
+# for development: from a local checkout (loaded in place, not copied)
+pi install ./pi-harness2
 ```
 
 Requires pi (the `pi` binary on PATH) and Node >= 22. Zero runtime dependencies.

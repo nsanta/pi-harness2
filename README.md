@@ -89,3 +89,10 @@ Invalid values fail loudly with the offending key or variable named.
 - **Model cost** — every `h2:run` makes real channel calls (propose, judge, compose,
   reflect per candidate); `--k` multiplies it.
 - Fingerprints are sha256 and not comparable with the Python core's sha1 runmarks.
+
+## Attribution
+
+The harness\xc2\xb2 method implemented here originates from
+[google-research/harness2](https://github.com/google-research/harness2) (Apache-2.0).
+This package is an independent TypeScript implementation for the pi coding agent; the
+OKF bridge publishes to the format consumed by [okf-god](https://github.com/nsanta/okf-god).

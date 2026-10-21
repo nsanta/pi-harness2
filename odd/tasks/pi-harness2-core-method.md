@@ -97,7 +97,7 @@ runtime deps; TypeScript strict semantics under jiti (no build step). Reference 
 workers: Python core at
 `~/projects/harness2-pi/upstream/harness2/core/`, our verified substrate at
 `~/projects/harness2-pi/upstream/harness2/substrate/pi.py`, pi docs at
-`/home/nicolas/.local/share/mise/installs/node/22.23.2/lib/node_modules/@earendil-works/pi-coding-agent/docs/`.
+`the installed pi package `docs/` directory.
 
 ## Evidence log
 

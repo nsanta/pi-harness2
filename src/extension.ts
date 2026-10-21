@@ -21,7 +21,7 @@ import {
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DEFAULTS, DEFAULT_STATE_DIR, loadConfig, type HarnessConfig } from "./config.ts";
-import { Library } from "./library.ts";
+import { Library, slugify } from "./library.ts";
 import { renderRunReport } from "./report.ts";
 import { runMode as runModeReal, type ModeResult, type Stage } from "./recursion.ts";
 import { clip } from "./runner.ts";
@@ -65,6 +65,8 @@ export function newRunId(now: Date = new Date()): string {
 
 export interface RunHarnessInput {
   task: string;
+  /** Archive grouping slug; defaults to slugify(task), same resolution as recursion. */
+  taskSlug?: string;
   /** Overrides config.k when set. */
   k?: number;
   /** Overrides config.mode when set. */
@@ -88,9 +90,10 @@ export interface RunHarnessOutcome {
 }
 
 /** One full propose–probe–compose run against the harness tree at <stateDir>/harness:
- * archives the final tree (runs/<runid>/final/), the report (report.md) and the stage
- * record (stages.json, the h2:report source of truth — the global ledger has no run
- * attribution). Throws when the harness tree is missing; callers report that. */
+ * groups everything under runs/<task-slug>/<runid>/ — the final tree (final/), the report
+ * (report.md) and the stage record (stages.json, the h2:report source of truth — the
+ * global ledger has no run attribution). The slug is input.taskSlug or slugify(task).
+ * Throws when the harness tree is missing; callers report that. */
 export async function runHarness(
   input: RunHarnessInput,
   overrides: Partial<HarnessDeps> = {},
@@ -106,8 +109,10 @@ export async function runHarness(
   const mode = input.mode ?? config.mode;
   const k = input.k ?? config.k;
   const runId = deps.newRunId();
+  const taskSlug = input.taskSlug ?? slugify(input.task);
   const result = await deps.runMode(mode, {
     task: input.task,
+    taskSlug,
     k,
     baseTree,
     stateDir,
@@ -115,7 +120,7 @@ export async function runHarness(
     wallSeconds: config.wallSeconds,
     piBin: config.piBin,
   });
-  const runDir = join(stateDir, "runs", runId);
+  const runDir = join(stateDir, "runs", taskSlug, runId);
   mkdirSync(runDir, {recursive: true});
   let finalDir: string | null = null;
   let finalTreeFiles = 0;
@@ -311,13 +316,60 @@ async function cmdRun(
   notifyOutcome(ctx, outcome);
 }
 
+export interface ResolvedRun {
+  /** Task-slug segment of the grouped layout: runs/<taskSlug>/<runId>. */
+  taskSlug: string;
+  runId: string;
+  /** The resolved archive directory. */
+  dir: string;
+}
+
+/** Resolve a run reference to its grouped archive directory under <stateDir>/runs.
+ *
+ * A reference containing "/" is a direct "<taskSlug>/<runId>" and is used as-is. A bare
+ * "<runId>" is searched across every task-slug directory beneath runs/; the first hit in
+ * sorted task-slug order wins, so the result is deterministic. References naming the
+ * pre-grouping flat layout (a runId directly beneath runs/, i.e. runs created before this
+ * change) are NOT resolved by either form; those directories remain on disk but are
+ * unreachable from here. Throws an actionable error when nothing matches. */
+export function resolveRunDir(stateDir: string, ref: string): ResolvedRun {
+  const wanted = ref.trim().replace(/^"|"$/g, "").trim();
+  if (!wanted) {
+    throw new Error('a run reference is required: "<task-slug>/<runid>" or a bare "<runid>"');
+  }
+  const runsRoot = join(stateDir, "runs");
+  const guidance =
+    `no run "${wanted}" under ${runsRoot}; pass "<task-slug>/<runid>" as shown by the ` +
+    `h2:run notification path, or a bare "<runid>" to search every task slug. ` +
+    `Runs archived before task-slug grouping (flat runs/<runid> layout) do not resolve; ` +
+    `they remain on disk.`;
+  if (wanted.includes("/")) {
+    const slash = wanted.indexOf("/");
+    const taskSlug = wanted.slice(0, slash);
+    const runId = wanted.slice(slash + 1);
+    const dir = join(runsRoot, taskSlug, runId);
+    if (!taskSlug || !runId || !existsSync(dir)) throw new Error(guidance);
+    return {taskSlug, runId, dir};
+  }
+  if (!existsSync(runsRoot)) throw new Error(guidance);
+  const hit = readdirSync(runsRoot)
+    .filter((name) => !name.startsWith("."))
+    .sort()
+    .find(
+      (slug) =>
+        statSync(join(runsRoot, slug, wanted), {throwIfNoEntry: false})?.isDirectory() === true,
+    );
+  if (!hit) throw new Error(guidance);
+  return {taskSlug: hit, runId: wanted, dir: join(runsRoot, hit, wanted)};
+}
+
 /** Adopt = the run's final tree BECOMES the harness. The previous tree is backed up once
  * (harness.bak-<runid>) and the harness is replaced, not overlaid: the composed tree is a
  * full merge, so overlaying would resurrect files the proposal deleted. */
 async function cmdAdopt(stateDir: string, rawArgs: string, ctx: Notifier): Promise<void> {
-  const runId = rawArgs.trim().replace(/^"|"$/g, "").trim();
-  if (!runId) throw new Error('usage: h2:adopt "<runid>"');
-  const finalDir = join(stateDir, "runs", runId, "final");
+  const resolved = resolveRunDir(stateDir, rawArgs);
+  const {runId} = resolved;
+  const finalDir = join(resolved.dir, "final");
   const after = readTreeReal(finalDir);
   if (Object.keys(after).length === 0) {
     throw new Error(`no final tree for run "${runId}" at ${finalDir}; run h2:run first`);
@@ -383,14 +435,22 @@ async function cmdStatus(stateDir: string, ctx: Notifier): Promise<void> {
   ctx.ui.notify(body.join("\n"), "info");
 }
 
+/** Newest grouped run as a "<taskSlug>/<runId>" reference — resolveRunDir's direct form.
+ * Runs left in the pre-grouping flat layout (runs/<runId>) are not candidates. */
 function latestRunId(stateDir: string): string | null {
   const runsDir = join(stateDir, "runs");
   if (!existsSync(runsDir)) return null;
   let best: {id: string; mtime: number} | null = null;
-  for (const name of readdirSync(runsDir)) {
-    const st = statSync(join(runsDir, name), {throwIfNoEntry: false});
-    if (!st?.isDirectory()) continue;
-    if (best === null || st.mtimeMs > best.mtime) best = {id: name, mtime: st.mtimeMs};
+  for (const slug of readdirSync(runsDir)) {
+    const slugDir = join(runsDir, slug);
+    if (!statSync(slugDir, {throwIfNoEntry: false})?.isDirectory()) continue;
+    for (const runId of readdirSync(slugDir)) {
+      const st = statSync(join(slugDir, runId), {throwIfNoEntry: false});
+      if (!st?.isDirectory()) continue;
+      if (best === null || st.mtimeMs > best.mtime) {
+        best = {id: `${slug}/${runId}`, mtime: st.mtimeMs};
+      }
+    }
   }
   return best?.id ?? null;
 }
@@ -408,9 +468,11 @@ interface ArchivedRun {
 
 async function cmdReport(stateDir: string, rawArgs: string, ctx: Notifier): Promise<void> {
   const wanted = rawArgs.trim().replace(/^"|"$/g, "").trim();
-  const runId = wanted || latestRunId(stateDir);
-  if (!runId) throw new Error(`no runs under ${join(stateDir, "runs")}; run h2:run first`);
-  const runDir = join(stateDir, "runs", runId);
+  const ref = wanted || latestRunId(stateDir);
+  if (!ref) throw new Error(`no runs under ${join(stateDir, "runs")}; run h2:run first`);
+  const resolved = resolveRunDir(stateDir, ref);
+  const runId = resolved.runId;
+  const runDir = resolved.dir;
   if (!existsSync(runDir)) throw new Error(`unknown run "${runId}": ${runDir} does not exist`);
   const stagesPath = join(runDir, "stages.json");
   let report: string;
@@ -421,6 +483,7 @@ async function cmdReport(stateDir: string, rawArgs: string, ctx: Notifier): Prom
       ok: arch.ok,
       mode: arch.mode,
       k: arch.k,
+      taskSlug: resolved.taskSlug,
       stages: arch.stages,
       finalTree: arch.finalTree,
       best: arch.best,
@@ -514,7 +577,8 @@ export default function harness2(pi: ExtensionAPI, options: Harness2Options = {}
     handler: guard("h2:run", async (args, ctx) => cmdRun(stateDir, args, deps, ctx)),
   });
   pi.registerCommand("h2:adopt", {
-    description: 'harness²: adopt a run\'s final tree (backs up the old harness) — "<runid>"',
+    description:
+      'harness²: adopt a run\'s final tree (backs up the old harness) — "[<task-slug>/]<runid>"',
     handler: guard("h2:adopt", async (args, ctx) => cmdAdopt(stateDir, args, ctx)),
   });
   pi.registerCommand("h2:status", {
@@ -522,7 +586,7 @@ export default function harness2(pi: ExtensionAPI, options: Harness2Options = {}
     handler: guard("h2:status", async (_args, ctx) => cmdStatus(stateDir, ctx)),
   });
   pi.registerCommand("h2:report", {
-    description: "harness²: (re)write a run's report — [runid]",
+    description: "harness²: (re)write a run's report — \"[<task-slug>/]<runid>\"",
     handler: guard("h2:report", async (args, ctx) => cmdReport(stateDir, args, ctx)),
   });
   pi.registerTool({

@@ -3,7 +3,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import harness2, { newRunId, parseRunArgs, runHarness } from "../src/extension.ts";
+import harness2, {
+  newRunId,
+  parseRunArgs,
+  resolveRunDir,
+  runHarness,
+} from "../src/extension.ts";
 import type { HarnessDeps } from "../src/extension.ts";
 import { Library } from "../src/library.ts";
 import type { ModeResult, RunInput } from "../src/recursion.ts";
@@ -69,6 +74,7 @@ function fakeResult(overrides: Partial<ModeResult> = {}): ModeResult {
     ok: true,
     mode: "parallel",
     k: 1,
+    taskSlug: "t",
     stages: [{name: "propose-general-1", ok: true, attempts: 1, costUsd: 0.01, detail: "d"}],
     finalTree: {"systemprompt.md": "NEW PROMPT", "extra.md": "e"},
     best: {label: "general-1", score: 7.5},
@@ -145,7 +151,7 @@ test("the factory registers exactly five commands and one tool", () => {
   assert.deepEqual(tool.parameters.required, ["task"]);
 });
 
-test("runHarness writes report.md, stages.json and final/, feeding config to runMode", async () => {
+test("runHarness archives report.md, stages.json and final/ under runs/<slug>/<run>", async () => {
   const stateDir = tempState();
   await seedHarness(stateDir, SEED);
   const {deps, captured} = runDeps();
@@ -156,12 +162,15 @@ test("runHarness writes report.md, stages.json and final/, feeding config to run
   const input = captured();
   assert.ok(input, "runMode was called once");
   assert.equal(input.task, "do X");
+  assert.equal(input.taskSlug, "do-x");
   assert.equal(input.k, 2);
   assert.deepEqual(input.baseTree, SEED);
   assert.deepEqual(input.models, {channel: ""});
   assert.equal(input.wallSeconds, 900);
   assert.equal(input.piBin, "pi");
-  const runDir = join(stateDir, "runs", "r-20251020-cafe");
+  // Everything groups under the task slug; the report path shows the grouped layout.
+  const runDir = join(stateDir, "runs", "do-x", "r-20251020-cafe");
+  assert.equal(outcome.reportPath, join(runDir, "report.md"));
   const report = readFileSync(join(runDir, "report.md"), "utf8");
   assert.ok(report.includes("# harness² run r-20251020-cafe"));
   assert.ok(report.includes("**Best:** general-1 (score 7.5)"));
@@ -169,6 +178,7 @@ test("runHarness writes report.md, stages.json and final/, feeding config to run
   assert.equal(readFileSync(join(runDir, "final", "extra.md"), "utf8"), "e");
   const archived = JSON.parse(readFileSync(join(runDir, "stages.json"), "utf8")) as {ok: boolean};
   assert.equal(archived.ok, true);
+  assert.ok(!existsSync(join(stateDir, "runs", "r-20251020-cafe")));
 });
 
 test("runHarness refuses to run without a harness tree and points at h2:init", async () => {
@@ -221,7 +231,11 @@ test("h2:run happy path parses flags, runs the flow and notifies the report", as
   const last = ctx.notifications.at(-1)!;
   assert.equal(last.level, "info");
   assert.ok(last.message.includes("# harness² run r-20251020-cafe"));
-  assert.ok(existsSync(join(stateDir, "runs", "r-20251020-cafe", "final", "systemprompt.md")));
+  assert.ok(
+    existsSync(
+      join(stateDir, "runs", "fix-the-flaky-test", "r-20251020-cafe", "final", "systemprompt.md"),
+    ),
+  );
 });
 
 test("h2:adopt backs up the previous tree once and replaces the harness exactly", async () => {
@@ -230,11 +244,12 @@ test("h2:adopt backs up the previous tree once and replaces the harness exactly"
   harness2(asPi(pi), {stateDir});
   await pi.commands.get("h2:init")!.handler("", fakeCtx());
   const finalTree: Tree = {"systemprompt.md": "NEW", "extra.md": "e"};
-  const finalDir = join(stateDir, "runs", "r-x", "final");
+  const finalDir = join(stateDir, "runs", "demo-task", "r-x", "final");
   mkdirSync(finalDir, {recursive: true});
   writeTree(finalTree, finalDir);
   const beforeTree = readTree(join(stateDir, "harness"));
 
+  // A bare runid resolves through the grouped layout (runs/*/<runid> search).
   const ctx = fakeCtx();
   await pi.commands.get("h2:adopt")!.handler("r-x", ctx);
   const backupDir = join(stateDir, "harness.bak-r-x");
@@ -250,8 +265,36 @@ test("h2:adopt backs up the previous tree once and replaces the harness exactly"
 
   const backupBefore = readTree(backupDir);
   const ctx2 = fakeCtx();
-  await pi.commands.get("h2:adopt")!.handler("r-x", ctx2);
+  await pi.commands.get("h2:adopt")!.handler("demo-task/r-x", ctx2);
   assert.deepEqual(readTree(backupDir), backupBefore, "the backup is one-time");
+});
+
+test("resolveRunDir: direct slug/runid hit, bare-runid search hit, guided miss", () => {
+  const stateDir = tempState();
+  mkdirSync(join(stateDir, "runs", "demo-task", "r-1"), {recursive: true});
+  mkdirSync(join(stateDir, "runs", "another", "r-1"), {recursive: true});
+
+  // The direct form is used exactly as given.
+  assert.deepEqual(resolveRunDir(stateDir, "demo-task/r-1"), {
+    taskSlug: "demo-task",
+    runId: "r-1",
+    dir: join(stateDir, "runs", "demo-task", "r-1"),
+  });
+
+  // A bare runid searches every task slug; sorted order makes the hit deterministic.
+  assert.deepEqual(resolveRunDir(stateDir, "r-1"), {
+    taskSlug: "another",
+    runId: "r-1",
+    dir: join(stateDir, "runs", "another", "r-1"),
+  });
+
+  // Misses throw actionable guidance, including the pre-grouping flat-layout caveat.
+  assert.throws(() => resolveRunDir(stateDir, "r-nope"), /task-slug/);
+  assert.throws(() => resolveRunDir(stateDir, "demo-task/r-nope"), /remain on disk/);
+  // Flat-layout runs (created before grouping) are not resolved by either form.
+  mkdirSync(join(stateDir, "runs", "r-flat"), {recursive: true});
+  assert.throws(() => resolveRunDir(stateDir, "r-flat"), /remain on disk/);
+  assert.throws(() => resolveRunDir(stateDir, ""), /run reference is required/);
 });
 
 test("runHarness threads config.json values into the run input", async () => {
@@ -365,7 +408,7 @@ test("h2:report regenerates report.md from archived stages, latest run by defaul
   harness2(asPi(pi), {stateDir});
   await seedHarness(stateDir, SEED);
   await runHarness({task: "t", stateDir}, runDeps().deps);
-  const reportPath = join(stateDir, "runs", "r-20251020-cafe", "report.md");
+  const reportPath = join(stateDir, "runs", "t", "r-20251020-cafe", "report.md");
   const ctx = fakeCtx();
   await pi.commands.get("h2:report")!.handler("", ctx);
   const report = readFileSync(reportPath, "utf8");
@@ -379,7 +422,7 @@ test("h2:report degrades to the ledger tail for runs without archived stages", a
   const pi = fakePi();
   const stateDir = tempState();
   harness2(asPi(pi), {stateDir});
-  const runDir = join(stateDir, "runs", "r-old");
+  const runDir = join(stateDir, "runs", "legacy", "r-old");
   mkdirSync(runDir, {recursive: true});
   writeFileSync(
     join(stateDir, "ledger.jsonl"),
@@ -387,7 +430,7 @@ test("h2:report degrades to the ledger tail for runs without archived stages", a
     "utf8",
   );
   const ctx = fakeCtx();
-  await pi.commands.get("h2:report")!.handler("r-old", ctx);
+  await pi.commands.get("h2:report")!.handler("legacy/r-old", ctx);
   const report = readFileSync(join(runDir, "report.md"), "utf8");
   assert.ok(report.includes("# harness² run r-old"));
   assert.ok(report.includes("compose"));
@@ -432,7 +475,7 @@ test("the h2_run tool runs the same flow and returns a summarizing result", asyn
   assert.equal(result.details.finalTreeFiles, 2);
   assert.equal(result.details.best?.label, "general-1");
   assert.ok(result.content[0]!.text.includes("Report:"));
-  assert.ok(existsSync(join(stateDir, "runs", "r-20251020-cafe", "report.md")));
+  assert.ok(existsSync(join(stateDir, "runs", "t", "r-20251020-cafe", "report.md")));
 });
 
 test("the h2_run tool reports failures with isError instead of throwing", async () => {

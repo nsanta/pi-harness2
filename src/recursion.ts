@@ -47,6 +47,8 @@ export interface ModeResult {
   ok: boolean;
   mode: "parallel" | "sequential";
   k: number;
+  /** Grouping slug used for archived runs (runs/<taskSlug>/<runId>) and ledger rows. */
+  taskSlug: string;
   stages: Stage[];
   finalTree: Tree | null;
   best: {label: string; score: number} | null;
@@ -83,6 +85,9 @@ function defaultDeps(): RecursionDeps {
 export interface RunInput {
   /** The work to adapt the harness for. */
   task: string;
+  /** Archive grouping slug (runs/<taskSlug>/<runId>); defaults to slugify(task). Tasks
+   * with the same slug share the slug directory; each run keeps its own <runId> subdir. */
+  taskSlug?: string;
   /** Slots per lens (parallel) or steps (sequential). */
   k: number;
   /** The tree every proposal starts from. */
@@ -132,14 +137,22 @@ function proposerAudit(e: unknown): {attempts: number; costUsd: number} {
   return {attempts: 0, costUsd: 0};
 }
 
-/** Append one JSON line per stage to <stateDir>/ledger.jsonl. */
-function appendLedger(stateDir: string, mode: string, k: number, stages: Stage[]): void {
+/** Append one JSON line per stage to <stateDir>/ledger.jsonl. The ledger itself stays
+ * flat and global; taskSlug only tags each row with the run's grouping slug. */
+function appendLedger(
+  stateDir: string,
+  mode: string,
+  k: number,
+  taskSlug: string,
+  stages: Stage[],
+): void {
   mkdirSync(stateDir, {recursive: true});
   for (const s of stages) {
     const row = {
       ts: new Date().toISOString(),
       mode,
       k,
+      taskSlug,
       stage: s.name,
       ok: s.ok,
       attempts: s.attempts,
@@ -162,10 +175,18 @@ export interface ProbeOutcome {
 /** Probe one candidate tree on the task in a throwaway mkdtemp workspace: stage the tree,
  * write the task prompt at <ws>/tasks/<runId>.md, run the headless child, render the
  * trajectory, and extract the deliverable (last assistant text). When stateDir is set,
- * stream.jsonl and trajectory.md are archived to <stateDir>/runs/<runId>/ BEFORE the
- * workspace is removed; the workspace is always removed, success or not. */
+ * stream.jsonl and trajectory.md are archived to <stateDir>/runs/<taskSlug>/<runId>/
+ * (taskSlug defaults to slugify(task)) BEFORE the workspace is removed; the workspace is
+ * always removed, success or not. */
 export async function probe(
-  input: {task: string; model: string; piBin?: string; stateDir?: string; runProbe: RunProbeDep},
+  input: {
+    task: string;
+    taskSlug?: string;
+    model: string;
+    piBin?: string;
+    stateDir?: string;
+    runProbe: RunProbeDep;
+  },
   tree: Tree,
   runId: string,
 ): Promise<ProbeOutcome> {
@@ -186,7 +207,7 @@ export async function probe(
     const trajectory = renderTrajectory(res.streamPath, PROBE_RENDER);
     const deliverable = extractLastAssistantText(res.streamPath);
     if (input.stateDir) {
-      const archive = join(input.stateDir, "runs", runId);
+      const archive = join(input.stateDir, "runs", input.taskSlug ?? slugify(input.task), runId);
       mkdirSync(archive, {recursive: true});
       if (existsSync(res.streamPath)) copyFileSync(res.streamPath, join(archive, "stream.jsonl"));
       writeFileSync(join(archive, "trajectory.md"), trajectory, "utf8");
@@ -248,6 +269,7 @@ async function reflectAndStore(
 export async function runParallel(input: RunInput): Promise<ModeResult> {
   const deps: RecursionDeps = {...defaultDeps(), ...input.deps};
   const {task, k, baseTree, stateDir, models, wallSeconds, piBin} = input;
+  const taskSlug = input.taskSlug ?? slugify(task);
   const stages: Stage[] = [];
   const fellBack: string[] = [];
   const candidates: Candidate[] = [];
@@ -282,7 +304,7 @@ export async function runParallel(input: RunInput): Promise<ModeResult> {
     let outcome: ProbeOutcome;
     try {
       outcome = await probe(
-        {task, model: models.channel, piBin, stateDir, runProbe: deps.runProbe},
+        {task, taskSlug, model: models.channel, piBin, stateDir, runProbe: deps.runProbe},
         candidateTree,
         runId,
       );
@@ -353,6 +375,7 @@ export async function runParallel(input: RunInput): Promise<ModeResult> {
     ok: top.length > 0 && finalTree !== null,
     mode: "parallel",
     k,
+    taskSlug,
     stages,
     finalTree,
     best: best ? {label: best.name, score: best.judgement.score} : null,
@@ -360,7 +383,7 @@ export async function runParallel(input: RunInput): Promise<ModeResult> {
     fellBack,
   };
   await reflectAndStore(input, deps, result, best?.trajectory ?? "");
-  appendLedger(stateDir, "parallel", k, result.stages);
+  appendLedger(stateDir, "parallel", k, taskSlug, result.stages);
   return result;
 }
 
@@ -373,6 +396,7 @@ export async function runParallel(input: RunInput): Promise<ModeResult> {
 export async function runSequential(input: RunInput): Promise<ModeResult> {
   const deps: RecursionDeps = {...defaultDeps(), ...input.deps};
   const {task, k, baseTree, stateDir, models, wallSeconds, piBin} = input;
+  const taskSlug = input.taskSlug ?? slugify(task);
   const stages: Stage[] = [];
   const fellBack: string[] = [];
   let current: Tree = {...baseTree};
@@ -404,7 +428,7 @@ export async function runSequential(input: RunInput): Promise<ModeResult> {
     let outcome: ProbeOutcome;
     try {
       outcome = await probe(
-        {task, model: models.channel, piBin, stateDir, runProbe: deps.runProbe},
+        {task, taskSlug, model: models.channel, piBin, stateDir, runProbe: deps.runProbe},
         candidateTree,
         runId,
       );
@@ -453,6 +477,7 @@ export async function runSequential(input: RunInput): Promise<ModeResult> {
     ok: priorBest !== null,
     mode: "sequential",
     k,
+    taskSlug,
     stages,
     finalTree: current,
     best: priorBest ? {label: priorBest.label, score: priorBest.score} : null,
@@ -460,7 +485,7 @@ export async function runSequential(input: RunInput): Promise<ModeResult> {
     fellBack,
   };
   await reflectAndStore(input, deps, result, priorBest?.trajectory ?? "");
-  appendLedger(stateDir, "sequential", k, result.stages);
+  appendLedger(stateDir, "sequential", k, taskSlug, result.stages);
   return result;
 }
 

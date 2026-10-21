@@ -99,6 +99,7 @@ test("runParallel k=1: both lenses proposed, compose sees only anonymized labels
     assert.equal(res.ok, true);
     assert.equal(res.mode, "parallel");
     assert.equal(res.k, 1);
+    assert.equal(res.taskSlug, "summarize-invoices");
     // k=1 builds exactly two slots: one general, one domain, each proposed under its lens.
     assert.deepEqual(
       proposeCalls.map((c) => c.lens),
@@ -129,13 +130,15 @@ test("runParallel k=1: both lenses proposed, compose sees only anonymized labels
     assert.deepEqual(res.best, {label: "domain-1", score: 0.9});
     assert.ok(res.deliverable.includes("domain-1"));
 
-    // Streams archived into stateDir BEFORE the workspace was removed.
-    const runDirs = readdirSync(join(root, "runs")).sort();
+    // Streams archived into stateDir, grouped by task slug, BEFORE the workspace was
+    // removed: runs/summarize-invoices/<runid>/ holds each probe's artifacts.
+    const slugDir = join(root, "runs", "summarize-invoices");
+    const runDirs = readdirSync(slugDir).sort();
     assert.equal(runDirs.length, 2);
     for (const d of runDirs) {
-      assert.ok(existsSync(join(root, "runs", d, "stream.jsonl")));
-      assert.ok(existsSync(join(root, "runs", d, "trajectory.md")));
-      const rendered = readFileSync(join(root, "runs", d, "trajectory.md"), "utf8");
+      assert.ok(existsSync(join(slugDir, d, "stream.jsonl")));
+      assert.ok(existsSync(join(slugDir, d, "trajectory.md")));
+      const rendered = readFileSync(join(slugDir, d, "trajectory.md"), "utf8");
       assert.ok(rendered.includes("[ASSISTANT]"));
     }
 
@@ -146,6 +149,8 @@ test("runParallel k=1: both lenses proposed, compose sees only anonymized labels
       .map((l) => JSON.parse(l) as Record<string, unknown>);
     assert.equal(rows.length, 8);
     assert.ok(rows.every((r) => r["ok"] === true));
+    // Every ledger row carries the run's grouping slug.
+    assert.ok(rows.every((r) => r["taskSlug"] === "summarize-invoices"));
     assert.ok(rows.some((r) => r["stage"] === "compose"));
 
     // Reflection ran on the best candidate's trajectory and stored the composed tree.
@@ -364,6 +369,41 @@ test("runMode dispatches both modes and rejects unknown ones", async () => {
     const par = await runMode("parallel", {...INPUT(root, deps), stateDir: root});
     assert.equal(par.mode, "parallel");
     assert.throws(() => runMode("bogus" as "parallel", INPUT(root, deps)), /exactly two/);
+  } finally {
+    rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test("an explicit input.taskSlug overrides slugify(task) for archives and ledger", async () => {
+  const root = tmpRoot();
+  try {
+    const deps: Partial<RecursionDeps> = {
+      propose: async () => ({edits: {"only.md": "x\n"}, notes: "", attempts: 1, costUsd: 0}),
+      compose: async () => {
+        throw new Error("unused in sequential mode");
+      },
+      runProbe: probeWriter(),
+      judge: async () => ({verdict: "pass", score: 0.9, evidence: [], notes: "", costUsd: 0}),
+      reflect: async () => "",
+    };
+    const res = await runSequential({...INPUT(root, deps), taskSlug: "custom-slug"});
+    assert.equal(res.taskSlug, "custom-slug");
+
+    // The probe archive groups under runs/custom-slug/, never slugify(task).
+    const slugDir = join(root, "runs", "custom-slug");
+    const runDirs = readdirSync(slugDir);
+    assert.equal(runDirs.length, 1);
+    assert.ok(existsSync(join(slugDir, runDirs[0]!, "stream.jsonl")));
+    assert.ok(existsSync(join(slugDir, runDirs[0]!, "trajectory.md")));
+    assert.ok(!existsSync(join(root, "runs", "summarize-invoices")));
+
+    // Ledger rows carry the override too.
+    const rows = readFileSync(join(root, "ledger.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    assert.ok(rows.length > 0);
+    assert.ok(rows.every((r) => r["taskSlug"] === "custom-slug"));
   } finally {
     rmSync(root, {recursive: true, force: true});
   }

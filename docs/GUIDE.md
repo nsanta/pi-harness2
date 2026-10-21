@@ -1,5 +1,8 @@
 # pi-harness2 guide
 
+Related: **[Using pi-harness2 with Gentle AI](GENTLE-AI.md)** — patterns, boundaries, and
+the division of labor between the two systems.
+
 harness² is a method, not a model: instead of tuning the model, it tunes the *harness* —
 the files around the model that shape its behavior. This package runs that method inside
 a pi session: it proposes edits to your harness, probes each candidate on your real task
@@ -24,7 +27,7 @@ and remembers what worked.
         compose: one merged tree, keep-base unless evidence
                             │
                             ▼
-              runs/<runid>/final  ──►  h2:adopt (your call)
+              runs/<task-slug>/<runid>/final ──► h2:adopt (your call)
                             │
                             ▼
         reflect → lessons → .harness2/library/<task>/
@@ -58,7 +61,7 @@ loading the extension is free.
 | Command | What it does |
 |---|---|
 | `/h2:init` | Create `.harness2/` with a starter harness (4 always-on files) and default `config.json`. Idempotent: existing files are never overwritten; skipped paths are reported. |
-| `/h2:run "<task>" [--k N] [--mode parallel\|sequential]` | Run the loop. `--k` is the recursion budget (default from config, 1). Parallel probes k general + k domain candidates and composes once; sequential carries the refined tree through k steps. Archives everything under `runs/<runid>/`. |
+| `/h2:run "<task>" [--k N] [--mode parallel\|sequential]` | Run the loop. `--k` is the recursion budget (default from config, 1). Parallel probes k general + k domain candidates and composes once; sequential carries the refined tree through k steps. Archives everything under `runs/<task-slug>/<runid>/` (slug from the task text). |
 | `/h2:adopt <runid>` | Replace the live harness with a run's composed tree. A one-time backup of the previous tree is kept at `harness.bak-<runid>` — including files the proposal deleted. Adoption is always explicit; a run never mutates your live harness. |
 | `/h2:status` | Ledger tail (last 10 stages) + library entry count. |
 | `/h2:report [runid]` | Render the markdown report for a run (latest if omitted). Falls back to a labeled ledger-tail summary when stage records are missing. |
@@ -134,7 +137,7 @@ h2:run: k=1 mode=parallel — 2 candidate slots
 [domain-1]   judge: pass (0.9) — "all four sections present, counts quoted"
 compose: adopted candidate-1 (script + report-structure guardrail)
 reflect: 3 lessons stored
-report: .harness2/runs/r-20260714-a1b2/report.md
+report: .harness2/runs/customer-csv-audit/r-20260714-a1b2/report.md
 ```
 
 The domain candidate won because it moved the mechanical checks into a `scripts/` helper
@@ -147,7 +150,8 @@ The domain candidate won because it moved the mechanical checks into a `scripts/
 ```
 
 The report shows the stage table, the winning score, and what changed vs the base. The
-composed tree sits at `runs/r-20260714-a1b2/final/` — inspect the diff before adopting.
+composed tree sits at `runs/customer-csv-audit/r-20260714-a1b2/final/` — inspect the diff
+before adopting.
 Nothing has touched your live harness yet.
 
 ```text
@@ -178,7 +182,8 @@ compounding across tasks.
 │   ├── tool_descriptions/tool_guidance.md
 │   └── scripts/check_schema.py
 ├── library/customers-audit/  # adopted tree snapshot + lessons.md
-├── runs/r-20260714-a1b2/     # stream.jsonl, trajectory.md, stages.json,
+├── runs/customer-csv-audit/  # grouped by task slug; per run: stream.jsonl,
+│   └── r-20260714-a1b2/      # trajectory.md, stages.json, report.md, final/
 │                             # report.md, final/
 ├── ledger.jsonl              # one stage row per line, append-only
 └── config.json

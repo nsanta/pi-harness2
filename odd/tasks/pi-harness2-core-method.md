@@ -116,6 +116,10 @@ workers: Python core at
 - G2 verification: 25/25 green; semantics parity confirmed against prompts.py (INV/DOM/
   GENERALIZE/_KEEP_BASE); leak guard clean in all task-facing text; retry budget exactly 2;
   no OpenCode residue in SURFACE_DOC (single JSDoc port note only, developer-facing).
+- G4.1 task-slug run grouping (user request): commits 1ab8261 (feat runs) + 7996129
+  (docs grouped layout + GENTLE-AI guide). Verify 8/8 after inline width fix (3 overlong
+  test lines); suite 82/82. Runs now archive to runs/<task-slug>/<runid>/; resolver
+  accepts slug/runid or bare runid; flat pre-grouping runs documented as unresolvable.
 - G4 commits: b49fc8e (config), 7013f00 (report), b501fe0 (extension), caac92b (pi
   manifest), eda76ff (README). Suite 80/80 after commits. Notable accepted deviations:
   registerTool follows pi's real ToolDefinition API; h2:adopt replaces with a one-time

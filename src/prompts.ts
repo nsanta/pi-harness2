@@ -1,4 +1,5 @@
-/** The method-carrying prompt text: what a proposer/composer reads, and the guards around it.
+/** The method-carrying prompt text: what a proposer, composer and reflector read, and the
+ * guards around it.
  *
  * Port of harness2/core/prompts.py (VERSION "harness2-1"), rewritten for the pi tree. The
  * stage text below is identical for every task; only the task and evidence arrive as values.
@@ -6,6 +7,7 @@
  * rejected wherever a mission is built (the BenchPrompts guard in harness2/core/spec.py).
  */
 
+import { clip } from "./runner.ts";
 import type { SurfaceSpec, Tree } from "./types.ts";
 
 /** Version of the prompt pack; bumps whenever the method semantics change. */
@@ -389,4 +391,64 @@ frontmatter \`name:\` equals its directory, and a trigger line naming it verbati
     ${example}`,
     ].join("\n\n"),
   );
+}
+
+/** Evidence is clipped like every other trajectory-bearing view (runner.ts's clip). */
+const MAX_CLIP_CHARS = 30000;
+
+/** The final tree as fenced per-file blocks, clipped like the trajectory. */
+function treeListing(tree: Tree): string {
+  const files = Object.keys(tree)
+    .sort()
+    .map((rel) => `## ${rel}\n\`\`\`\n${tree[rel]!}${tree[rel]!.endsWith("\n") ? "" : "\n"}\`\`\``)
+    .join("\n\n");
+  return clip(files || "(the harness is empty)", MAX_CLIP_CHARS);
+}
+
+/** The reflector role: evidence-tied, generalizable lessons only, verbatim quotes. */
+export const REFLECT_SYSTEM = tidy(
+  `You are the reflector at the end of one harnessing run.
+
+Distill lessons that will help the NEXT task of this kind: evidence-tied, generalizable
+lessons only. Every lesson must quote the trajectory VERBATIM as its evidence -- copy the
+exact text, never paraphrase. No task-specific trivia, no restating the task, no invented
+facts or sources. A machine consumes your reply: return exactly the one JSON object the
+OUTPUT CONTRACT describes.`,
+);
+
+/** What buildReflectMission needs: the run's work, the best execution's trajectory, and the
+ * adopted final tree. */
+export interface ReflectMissionInput {
+  /** The task the run worked on. */
+  task: string;
+  /** The rendered trajectory of the run's best execution. */
+  trajectory: string;
+  /** The final harness tree the lessons are about. */
+  tree: Tree;
+}
+
+/** One reflect mission: the work, the best execution's trajectory, the final tree, and a
+ * strict MARKDOWN-ONLY output contract. Lesson identity is owned by the wrapper, never by
+ * the model: library.ts's emitLesson builds the frontmatter around the stored body, so the
+ * contract forbids the model from emitting YAML frontmatter or HTML outright. */
+export function buildReflectMission(input: ReflectMissionInput): string {
+  const parts = [
+    `# THE TASK\n\n${input.task.trim()}`,
+    `# THE RUN'S TRAJECTORY\n\n${clip(input.trajectory, MAX_CLIP_CHARS)}`,
+    `# THE FINAL HARNESS\n\n${treeListing(input.tree)}`,
+    tidy(
+      `# OUTPUT CONTRACT
+
+Reply with ONE JSON object and nothing else:
+
+    {"lessons": "<markdown>"}
+
+"lessons" is the distilled lesson file, MARKDOWN ONLY: no YAML frontmatter, no HTML -- the
+wrapper adds the identity metadata around your markdown, never you. One section per lesson,
+each opening with its verbatim quote from the trajectory, then the generalizable lesson.
+Where a lesson refers to an artifact or file, link it in markdown ([text](path)) instead of
+describing it.`,
+    ),
+  ];
+  return tidy(parts.join("\n\n"));
 }

@@ -4,9 +4,74 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { callChannel, type CallChannelOptions } from "../src/channel.ts";
-import { Library, reflect, slugify } from "../src/library.ts";
+import { emitLesson, Library, reflect, slugify } from "../src/library.ts";
 import { fingerprint } from "../src/tree.ts";
 import type { ChannelReply, Tree } from "../src/types.ts";
+
+test("emitLesson wraps the body in stable frontmatter; pass adds the run verifier", () => {
+  const now = new Date("2025-06-01T10:00:00.000Z");
+  const out = emitLesson({
+    taskSlug: "task-one",
+    runId: "r-20251020-cafe",
+    verdict: "pass",
+    body: "# lesson\n",
+    now,
+  });
+  assert.equal(
+    out,
+    "---\n" +
+      "type: doc\n" +
+      "resource: harness2-lessons-task-one\n" +
+      "status: stable\n" +
+      "generated:\n" +
+      '  by: "h2:run/r-20251020-cafe"\n' +
+      "  at: 2025-06-01T10:00:00.000Z\n" +
+      "verified:\n" +
+      '  - by: "h2:run/r-20251020-cafe"\n' +
+      "    at: 2025-06-01T10:00:00.000Z\n" +
+      "---\n" +
+      "# lesson\n",
+  );
+});
+
+test("emitLesson: partial and fail emit no verifier; stale_after only when provided", () => {
+  const now = new Date("2025-06-01T10:00:00.000Z");
+  for (const verdict of ["partial", "fail"] as const) {
+    const out = emitLesson({taskSlug: "t", runId: "r-x", verdict, body: "b", now});
+    assert.ok(!out.includes("verified:"), `${verdict} verifies nothing`);
+    assert.ok(!out.includes("- by:"), `${verdict} has no verifier events`);
+    assert.ok(!out.includes("stale_after:"));
+  }
+  const stale = emitLesson({
+    taskSlug: "t",
+    runId: "r-x",
+    verdict: "pass",
+    body: "b",
+    staleAfter: "2025-07-01T00:00:00.000Z",
+    now,
+  });
+  assert.ok(stale.includes("stale_after: 2025-07-01T00:00:00.000Z"));
+  // Key order stays stable: the verifier block precedes stale_after.
+  assert.ok(stale.indexOf("verified:") < stale.indexOf("stale_after:"));
+});
+
+test("emitLesson normalizes the body and derives the resource from the task slug", () => {
+  const now = new Date("2025-06-01T10:00:00.000Z");
+  const out = emitLesson({
+    taskSlug: "my-task",
+    runId: "r-x",
+    verdict: "fail",
+    body: "\n\na lesson\n\n\n\nanother\n\n\n",
+    now,
+  });
+  // Blank runs collapse and the body ends on exactly one newline.
+  assert.ok(out.endsWith("a lesson\n\nanother\n"));
+  assert.ok(out.includes("resource: harness2-lessons-my-task"));
+  // Without a pinned instant, generated.at is a live ISO instant (nested by/at form).
+  const live = emitLesson({taskSlug: "t", runId: "r-x", verdict: "partial", body: "b"});
+  assert.match(live, /^---\ntype: doc\n/);
+  assert.match(live, /  at: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\n/);
+});
 
 const TREE_A: Tree = {"systemprompt.md": "a\n"};
 const TREE_B: Tree = {"systemprompt.md": "b\n", "guardrails.md": "- rule\n"};

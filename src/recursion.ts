@@ -24,8 +24,14 @@ import {
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractLastAssistantText, judge, unavailableJudgement, type Judgement } from "./judge.ts";
-import { Library, reflect, slugify } from "./library.ts";
+import {
+  extractLastAssistantText,
+  judge,
+  unavailableJudgement,
+  type Judgement,
+  type Verdict,
+} from "./judge.ts";
+import { emitLesson, Library, reflect, slugify } from "./library.ts";
 import { compose, propose, ProposerError } from "./proposer.ts";
 import { renderTrajectory, runProbe, stageWorkspace } from "./runner.ts";
 import { anonIds, orderGradedFirst, poolSlots } from "./selection.ts";
@@ -221,6 +227,9 @@ export async function probe(
 interface Candidate {
   /** Internal slot name, e.g. "general-1"; never shown to the composer. */
   name: string;
+  /** The probe run id this candidate executed under; archived under runs/<taskSlug>/ and
+   * the provenance named in the lesson verifier when this candidate becomes the best. */
+  runId: string;
   edits: Tree;
   trajectory: string;
   deliverable: string;
@@ -229,14 +238,31 @@ interface Candidate {
 
 const isGraded = (c: Candidate): boolean => c.judgement.verdict !== "unavailable";
 
-/** Reflect on the adopted tree and store it in the library. Best-effort by contract: a
- * thrown reflector records a reflect stage with ok:false; empty lessons skip the add; and
- * with no judged trajectory at all there is nothing to reflect on, so nothing runs. */
+/** The best executed candidate's evidence, as the stored lesson's frontmatter needs it. */
+interface BestEvidence {
+  runId: string;
+  verdict: Verdict;
+  score: number;
+}
+
+/** Only a pass scoring >= 0.8 verifies the lesson; every other graded outcome (and no best
+ * at all) stays honest with no verifier -- the consumer's unverified tier, never a faked
+ * confirmation. "unavailable" never maps to pass, so it lands here too. */
+function lessonVerdict(best: BestEvidence | null): "pass" | "partial" {
+  return best !== null && best.verdict === "pass" && best.score >= 0.8 ? "pass" : "partial";
+}
+
+/** Reflect on the adopted tree and store it in the library, frontmatter-wrapped via
+ * emitLesson. Best-effort by contract: a thrown reflector records a reflect stage with
+ * ok:false; empty lessons skip the add; and with no judged trajectory at all there is
+ * nothing to reflect on, so nothing runs. The wrapper owns the frontmatter: the verifier
+ * names the best candidate's archived probe run, never anything the model claimed. */
 async function reflectAndStore(
   input: RunInput,
   deps: RecursionDeps,
   result: ModeResult,
   trajectory: string,
+  best: BestEvidence | null,
 ): Promise<void> {
   if (result.finalTree === null || !trajectory) return;
   try {
@@ -252,7 +278,12 @@ async function reflectAndStore(
       new Library(input.stateDir).add({
         taskSlug: slugify(input.task),
         tree: result.finalTree,
-        lessons,
+        lessons: emitLesson({
+          taskSlug: result.taskSlug,
+          runId: best?.runId ?? "",
+          verdict: lessonVerdict(best),
+          body: lessons,
+        }),
         summary: input.task.slice(0, 100),
       });
       result.stages.push(stage("reflect", true, 1, 0, "lessons stored"));
@@ -338,6 +369,7 @@ export async function runParallel(input: RunInput): Promise<ModeResult> {
     );
     candidates.push({
       name,
+      runId,
       edits: proposedEdits,
       trajectory: outcome.trajectory,
       deliverable: outcome.deliverable,
@@ -382,7 +414,11 @@ export async function runParallel(input: RunInput): Promise<ModeResult> {
     deliverable: best?.deliverable ?? "",
     fellBack,
   };
-  await reflectAndStore(input, deps, result, best?.trajectory ?? "");
+  const bestEvidence: BestEvidence | null =
+    best
+      ? {runId: best.runId, verdict: best.judgement.verdict, score: best.judgement.score}
+      : null;
+  await reflectAndStore(input, deps, result, best?.trajectory ?? "", bestEvidence);
   appendLedger(stateDir, "parallel", k, taskSlug, result.stages);
   return result;
 }
@@ -400,8 +436,14 @@ export async function runSequential(input: RunInput): Promise<ModeResult> {
   const stages: Stage[] = [];
   const fellBack: string[] = [];
   let current: Tree = {...baseTree};
-  let priorBest: {label: string; score: number; trajectory: string; deliverable: string} | null =
-    null;
+  let priorBest: {
+    label: string;
+    score: number;
+    trajectory: string;
+    deliverable: string;
+    runId: string;
+    verdict: Verdict;
+  } | null = null;
   for (let stepNo = 1; stepNo <= k; stepNo++) {
     const lens: "general" | "domain" = stepNo % 2 === 0 ? "general" : "domain";
     const name = `step-${stepNo}`;
@@ -470,6 +512,8 @@ export async function runSequential(input: RunInput): Promise<ModeResult> {
         score: judgement.score,
         trajectory: outcome.trajectory,
         deliverable: outcome.deliverable,
+        runId,
+        verdict: judgement.verdict,
       };
     }
   }
@@ -484,7 +528,11 @@ export async function runSequential(input: RunInput): Promise<ModeResult> {
     deliverable: priorBest?.deliverable ?? "",
     fellBack,
   };
-  await reflectAndStore(input, deps, result, priorBest?.trajectory ?? "");
+  const bestEvidence: BestEvidence | null =
+    priorBest === null
+      ? null
+      : {runId: priorBest.runId, verdict: priorBest.verdict, score: priorBest.score};
+  await reflectAndStore(input, deps, result, priorBest?.trajectory ?? "", bestEvidence);
   appendLedger(stateDir, "sequential", k, taskSlug, result.stages);
   return result;
 }

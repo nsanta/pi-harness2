@@ -161,7 +161,14 @@ test("runParallel k=1: both lenses proposed, compose sees only anonymized labels
       lib.entries().map((e) => e.taskSlug),
       ["summarize-invoices"],
     );
-    assert.equal(lib.lessonsOf("summarize-invoices"), "# shared lesson");
+    // The stored lesson is frontmatter-wrapped by the wrapper (never the model): the pass
+    // best (0.9) verifies it with the best candidate's archived probe run id; the body
+    // follows the closing fence.
+    const stored = lib.lessonsOf("summarize-invoices")!;
+    assert.ok(stored.startsWith("---\ntype: doc\n"));
+    assert.ok(stored.includes("resource: harness2-lessons-summarize-invoices"));
+    assert.match(stored, /verified:\n  - by: "h2:run\/[0-9a-f]+-domain-1"\n    at: \d{4}-/);
+    assert.ok(stored.endsWith("---\n# shared lesson\n"));
     assert.deepEqual(lib.treeOf("summarize-invoices"), {...BASE, "composed.md": "yes\n"});
   } finally {
     rmSync(root, {recursive: true, force: true});
@@ -272,6 +279,38 @@ test("a throwing reflector never fails the run; it records ok false", async () =
     assert.ok(!existsSync(join(root, "library"))); // nothing half-stored
   } finally {
     rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test("a sub-0.8 or failing best still stores frontmatter, but verifies nothing", async () => {
+  for (const judgement of [
+    {verdict: "pass", score: 0.5},
+    {verdict: "fail", score: 0.9},
+  ] as const) {
+    const root = tmpRoot();
+    try {
+      const deps: Partial<RecursionDeps> = {
+        propose: async () => ({edits: {"only.md": "x\n"}, notes: "", attempts: 1, costUsd: 0}),
+        compose: async () => {
+          throw new Error("unused in sequential mode");
+        },
+        runProbe: probeWriter(),
+        judge: async () => ({...judgement, evidence: [], notes: "", costUsd: 0}),
+        reflect: async () => "# lesson",
+      };
+      const res = await runSequential(INPUT(root, deps));
+      assert.equal(res.ok, true);
+      const stored = new Library(root).lessonsOf("summarize-invoices")!;
+      assert.ok(stored.startsWith("---\ntype: doc\n"), "frontmatter wraps the body");
+      assert.ok(stored.includes("resource: harness2-lessons-summarize-invoices"));
+      assert.ok(
+        !stored.includes("verified:"),
+        `${judgement.verdict} ${judgement.score} must not verify`,
+      );
+      assert.ok(stored.endsWith("---\n# lesson\n"));
+    } finally {
+      rmSync(root, {recursive: true, force: true});
+    }
   }
 });
 

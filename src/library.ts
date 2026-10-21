@@ -3,6 +3,10 @@
  * entry record (port of core/library.py's add/tree_of/retain/forget/index, reshaped for a
  * single-domain pi package: no run-tag/mode/domain nesting, explicit index rebuilds).
  *
+ * Lesson identity is owned by the wrapper, never the model: emitLesson wraps a reflector's
+ * markdown in the stable frontmatter block external consumers read, deriving the verifier
+ * from the run's graded outcome alone.
+ *
  * Reflection failure is honesty-adjacent here too: the reflector returns "" on any
  * failure, and the caller skips the library add -- a failed reflection is never stored and
  * never fails the run, mirroring the judge's unavailable-is-not-a-zero invariant. */
@@ -18,7 +22,8 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { callChannel } from "./channel.ts";
-import { clip, isRecord } from "./runner.ts";
+import { isRecord } from "./runner.ts";
+import { buildReflectMission, REFLECT_SYSTEM } from "./prompts.ts";
 import { fingerprint, readTree, writeTree } from "./tree.ts";
 import type { ChannelReply, Tree } from "./types.ts";
 
@@ -166,45 +171,44 @@ function tidy(text: string): string {
   return `${text.replace(/\n{3,}/g, "\n\n").trim()}\n`;
 }
 
-const MAX_CLIP_CHARS = 30000;
-
-/** The reflector role: evidence-tied, generalizable lessons only, verbatim quotes. */
-const REFLECT_SYSTEM = tidy(
-  `You are the reflector at the end of one harnessing run.
-
-Distill lessons that will help the NEXT task of this kind: evidence-tied, generalizable
-lessons only. Every lesson must quote the trajectory VERBATIM as its evidence -- copy the
-exact text, never paraphrase. No task-specific trivia, no restating the task, no invented
-facts or sources. A machine consumes your reply: return exactly the one JSON object the
-OUTPUT CONTRACT describes.`,
-);
-
-/** The final tree as fenced per-file blocks, clipped like the trajectory. */
-function treeListing(tree: Tree): string {
-  const files = Object.keys(tree)
-    .sort()
-    .map((rel) => `## ${rel}\n\`\`\`\n${tree[rel]!}${tree[rel]!.endsWith("\n") ? "" : "\n"}\`\`\``)
-    .join("\n\n");
-  return clip(files || "(the harness is empty)", MAX_CLIP_CHARS);
+/** One lesson to emit: the verdict is the RUN's graded outcome, never model opinion -- it
+ * decides the verifier block alone. */
+export interface EmitLessonInput {
+  taskSlug: string;
+  runId: string;
+  verdict: "pass" | "partial" | "fail";
+  body: string;
+  /** Optional ISO 8601 staleness marker; emitted only when provided. */
+  staleAfter?: string;
+  /** Instant pinned for tests; defaults to now. */
+  now?: Date;
 }
 
-function buildReflectMission(input: ReflectInput): string {
-  const parts = [
-    `# THE TASK\n\n${input.task.trim()}`,
-    `# THE RUN'S TRAJECTORY\n\n${clip(input.trajectory, MAX_CLIP_CHARS)}`,
-    `# THE FINAL HARNESS\n\n${treeListing(input.tree)}`,
-    tidy(
-      `# OUTPUT CONTRACT
-
-Reply with ONE JSON object and nothing else:
-
-    {"lessons": "<markdown>"}
-
-"lessons" is the distilled lesson file in markdown: one section per lesson, each opening
-with its verbatim quote from the trajectory, then the generalizable lesson.`,
-    ),
+/** Wrap a reflector's markdown body in the stable frontmatter block external consumers
+ * read. Hand-built YAML (no yaml dependency), fixed key order, one ISO instant shared by
+ * generated.at and the verifier's at. A pass run verifies the lessons with the archived
+ * run record (h2:run/<runId>); partial and fail stay honest and emit NO verifier, which
+ * consumers read as the unverified tier. The body is normalized to end on exactly one
+ * newline; the model never supplies frontmatter itself (prompts.ts's reflect contract). */
+export function emitLesson(input: EmitLessonInput): string {
+  const at = (input.now ?? new Date()).toISOString();
+  const lines = [
+    "type: doc",
+    `resource: harness2-lessons-${input.taskSlug}`,
+    "status: stable",
+    // OKF §5.2 nested mapping — the flat dotted key is a concept name, not YAML syntax;
+    // the consumer's catalog reads generated:{by,at} and cannot see the flat form.
+    "generated:",
+    `  by: "h2:run/${input.runId}"`,
+    `  at: ${at}`,
   ];
-  return tidy(parts.join("\n\n"));
+  if (input.verdict === "pass") {
+    lines.push("verified:", `  - by: "h2:run/${input.runId}"`, `    at: ${at}`);
+  }
+  if (input.staleAfter !== undefined) {
+    lines.push(`stale_after: ${input.staleAfter}`);
+  }
+  return `---\n${lines.join("\n")}\n---\n${tidy(input.body)}`;
 }
 
 export interface ReflectInput {

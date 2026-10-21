@@ -7,6 +7,7 @@ result with one command.
 
 **Full guide with a worked use case: [docs/GUIDE.md](docs/GUIDE.md).**
 **Using it together with Gentle AI: [docs/GENTLE-AI.md](docs/GENTLE-AI.md).**
+**Publishing lessons for okf_god (OKF): [docs/INTEGRATION-OKF.md](docs/INTEGRATION-OKF.md).**
 
 - **Propose** — candidate edits to the harness tree, from two lenses (general and
   task-domain).

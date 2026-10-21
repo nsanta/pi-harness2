@@ -46,4 +46,12 @@ indexes by default. There is no API, import, event, or shared state between the 
 
 ## Evidence log
 
-- (pending)
+- OKF bridge (user-directed: independent extensions, together by contract): commits
+  2f78d68 (feat library/OKF emission), d88dbae (feat publish + independence guard test),
+  68051fe (docs contract + feature plan). Suite 93/93.
+- Verify found one real interop defect: flat `generated.at:` vs the consumer's nested
+  `generated:{by,at}` mapping — fixed in emitLesson and proven empirically through
+  okf_god's own parser: pass → machine-confirmed + generatedAt read; partial → unverified.
+  The independence grep guard correctly rejected my first fix (comment named the consumer
+  inside src/) — reworded.
+- (pending — record commit ids per closed group)

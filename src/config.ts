@@ -20,6 +20,15 @@ export const CONFIG_DEFAULTS: Omit<HarnessConfig, "stateDir"> = {
 /** Default state root: <cwd>/.harness2. */
 export const DEFAULT_STATE_DIR = join(process.cwd(), ".harness2");
 
+/** Default publish target directory (relative to the working directory). */
+export const DEFAULT_DOCS_DIR = "docs";
+
+/** Effective docsDir for h2:publish: an explicit publish.docsDir (file or H2_DOCS_DIR),
+ * else DEFAULT_DOCS_DIR. The only consumer of the publish block. */
+export function resolveDocsDir(config: HarnessConfig): string {
+  return config.publish?.docsDir ?? DEFAULT_DOCS_DIR;
+}
+
 export interface HarnessConfig {
   /** State root: harness/, runs/, library/, ledger.jsonl and config.json live here. */
   stateDir: string;
@@ -35,6 +44,11 @@ export interface HarnessConfig {
   wallSeconds: number;
   /** pi binary invoked for channel calls and probes. */
   piBin: string;
+  /** Optional publish settings. h2:publish is the ONLY feature allowed to write outside
+   * the state directory, and only when that command runs; docsDir defaults to
+   * DEFAULT_DOCS_DIR when absent. Kept out of CONFIG_DEFAULTS, so the seeded config.json
+   * carries no docs-write path until the user opts in. */
+  publish?: {docsDir?: string};
 }
 
 function fail(source: string, key: string, value: unknown, want: string): Error {
@@ -67,18 +81,33 @@ function asMode(source: string, key: string, value: unknown): "parallel" | "sequ
   return value;
 }
 
+function asPublish(source: string, key: string, value: unknown): {docsDir?: string} {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw fail(source, key, value, "an object with an optional docsDir");
+  }
+  const docsDir = (value as Record<string, unknown>)["docsDir"];
+  if (docsDir === undefined) return {};
+  if (typeof docsDir !== "string" || docsDir.trim() === "") {
+    throw fail(source, `${key}.docsDir`, docsDir, "a non-empty string");
+  }
+  return {docsDir};
+}
+
 type Validator<T> = (source: string, key: string, value: unknown) => T;
 
-const FILE_KEYS: Record<string, Validator<string | number | "parallel" | "sequential">> = {
+type KnownValue = string | number | "parallel" | "sequential" | {docsDir?: string};
+
+const FILE_KEYS: Record<string, Validator<KnownValue>> = {
   channelModel: asString,
   solverModel: asString,
   k: asPositiveInt,
   mode: asMode,
   wallSeconds: asPositiveNumber,
   piBin: asString,
+  publish: asPublish,
 };
 
-const ENV_KEYS: Record<string, Validator<string | number | "parallel" | "sequential">> = {
+const ENV_KEYS: Record<string, Validator<KnownValue>> = {
   H2_CHANNEL_MODEL: asString,
   H2_SOLVER_MODEL: asString,
   H2_PI_BIN: asString,
@@ -98,6 +127,10 @@ const ENV_KEYS: Record<string, Validator<string | number | "parallel" | "sequent
       throw fail(source, key, raw, "a finite number > 0");
     }
     return n;
+  },
+  H2_DOCS_DIR: (source, key, raw) => {
+    if (raw.trim() === "") throw fail(source, key, raw, "a non-empty string");
+    return {docsDir: raw};
   },
 };
 
@@ -147,4 +180,5 @@ const ENV_TO_CONFIG: Record<string, keyof Omit<HarnessConfig, "stateDir">> = {
   H2_K: "k",
   H2_MODE: "mode",
   H2_WALL_SECONDS: "wallSeconds",
+  H2_DOCS_DIR: "publish",
 };

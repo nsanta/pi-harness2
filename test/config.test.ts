@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { test } from "node:test";
-import { DEFAULT_STATE_DIR, loadConfig } from "../src/config.ts";
+import { DEFAULT_DOCS_DIR, DEFAULT_STATE_DIR, loadConfig, resolveDocsDir } from "../src/config.ts";
 
 const ENV_KEYS = [
   "H2_CHANNEL_MODEL",
@@ -12,7 +12,62 @@ const ENV_KEYS = [
   "H2_K",
   "H2_MODE",
   "H2_WALL_SECONDS",
+  "H2_DOCS_DIR",
 ];
+
+test("publish.docsDir defaults to docs; H2_DOCS_DIR overrides it", () => {
+  withEnv({}, () => {
+    const cfg = loadConfig(tempState());
+    assert.equal(cfg.publish, undefined, "no publish block unless configured");
+    assert.equal(resolveDocsDir(cfg), DEFAULT_DOCS_DIR);
+    assert.equal(DEFAULT_DOCS_DIR, "docs");
+  });
+  withEnv({H2_DOCS_DIR: "/tmp/elsewhere"}, () => {
+    const cfg = loadConfig(tempState());
+    assert.deepEqual(cfg.publish, {docsDir: "/tmp/elsewhere"});
+    assert.equal(resolveDocsDir(cfg), "/tmp/elsewhere");
+  });
+});
+
+test("config.json publish.docsDir merges over the default; env wins over the file", () => {
+  const dir = tempState();
+  writeFileSync(join(dir, "config.json"), JSON.stringify({publish: {docsDir: "site"}}));
+  withEnv({}, () => {
+    assert.deepEqual(loadConfig(dir).publish, {docsDir: "site"});
+  });
+  withEnv({H2_DOCS_DIR: "elsewhere"}, () => {
+    assert.deepEqual(loadConfig(dir).publish, {docsDir: "elsewhere"});
+  });
+  // publish: {} is legal and resolves to the default docsDir.
+  writeFileSync(join(dir, "config.json"), JSON.stringify({publish: {}}));
+  withEnv({}, () => {
+    assert.deepEqual(loadConfig(dir).publish, {});
+    assert.equal(resolveDocsDir(loadConfig(dir)), "docs");
+  });
+});
+
+test("invalid publish values throw with the source and key named", () => {
+  withEnv({}, () => {
+    const dir = tempState();
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify({publish: "docs"}));
+    assert.throws(
+      () => loadConfig(dir),
+      (e: Error) => e.message.includes(path) && e.message.includes("publish"),
+    );
+    writeFileSync(path, JSON.stringify({publish: {docsDir: 5}}));
+    assert.throws(
+      () => loadConfig(dir),
+      (e: Error) => e.message.includes("publish.docsDir") && e.message.includes("5"),
+    );
+  });
+  withEnv({H2_DOCS_DIR: "  "}, () => {
+    assert.throws(
+      () => loadConfig(tempState()),
+      (e: Error) => e.message.includes("H2_DOCS_DIR"),
+    );
+  });
+});
 
 function tempState(): string {
   return mkdtempSync(join(tmpdir(), "h2-cfg-"));

@@ -1,8 +1,10 @@
-/** The harness² pi extension surface: five commands (h2:init, h2:run, h2:adopt, h2:status,
- * h2:report) and one model-callable tool (h2_run), all funnelling through the injectable
- * runHarness() flow. Every handler catches its own failures and reports them through
- * ctx.ui.notify(..., "error") — a command never throws raw into the session. All state
- * lives under one state directory (<cwd>/.harness2 by default, overridable via options).
+/** The harness² pi extension surface: six commands (h2:init, h2:run, h2:adopt, h2:status,
+ * h2:report, h2:publish) and one model-callable tool (h2_run), all funnelling through the
+ * injectable runHarness() flow. Every handler catches its own failures and reports them
+ * through ctx.ui.notify(..., "error") — a command never throws raw into the session. All
+ * state lives under one state directory (<cwd>/.harness2 by default, overridable via
+ * options); the one exception is h2:publish, which writes a lesson doc outside it, and
+ * only when the user runs that command.
  *
  * Command names use colons (h2:init, not h2_init): pi dispatches extension commands by
  * exact invocationName match with no character restrictions, and itself generates colon
@@ -20,7 +22,13 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CONFIG_DEFAULTS, DEFAULT_STATE_DIR, loadConfig, type HarnessConfig } from "./config.ts";
+import {
+  CONFIG_DEFAULTS,
+  DEFAULT_STATE_DIR,
+  loadConfig,
+  resolveDocsDir,
+  type HarnessConfig,
+} from "./config.ts";
 import { Library, slugify } from "./library.ts";
 import { renderRunReport } from "./report.ts";
 import { runMode as runModeReal, type ModeResult, type Stage } from "./recursion.ts";
@@ -530,6 +538,43 @@ export interface Harness2Options {
   deps?: Partial<HarnessDeps>;
 }
 
+/** h2:publish: the ONLY handler permitted to write outside the state directory, and only
+ * when the user runs it. Copies the task's stored lesson (frontmatter included) verbatim
+ * to <docsDir>/harness2/<taskSlug>.md, creating directories as needed, and reports the
+ * written path plus the trust tier an external consumer will derive from the frontmatter:
+ * a run verifier means machine-confirmed; its absence means unverified. The lesson is read
+ * from the library (not the run archive): the library holds the task's current distilled
+ * lessons, which is what publishing means. Without one there is nothing honest to publish. */
+async function cmdPublish(
+  stateDir: string,
+  rawArgs: string,
+  deps: Partial<HarnessDeps>,
+  ctx: Notifier,
+): Promise<void> {
+  const resolved = resolveRunDir(stateDir, rawArgs);
+  const library = new Library(stateDir);
+  const lesson = library.lessonsOf(resolved.taskSlug);
+  if (lesson === null) {
+    throw new Error(
+      `no stored lesson for task "${resolved.taskSlug}" under ` +
+        `${join(library.dir, resolved.taskSlug)}; reflection failed for this run or the run ` +
+        `predates stored lessons — re-run h2:run for this task, then h2:publish again`,
+    );
+  }
+  const load = deps.loadConfig ?? loadConfig;
+  const target = join(resolveDocsDir(load(stateDir)), "harness2", `${resolved.taskSlug}.md`);
+  mkdirSync(dirname(target), {recursive: true});
+  writeFileSync(target, lesson, "utf8");
+  const tier = /^verified:/m.test(lesson)
+    ? "machine-confirmed (run verifier in the frontmatter)"
+    : "unverified (no verifier recorded; a human may add one by editing the file)";
+  ctx.ui.notify(
+    `published harness² lessons for "${resolved.taskSlug}" (run ${resolved.runId}): ${target}\n` +
+      `trust tier: ${tier}`,
+    "info",
+  );
+}
+
 /** Wrap one command body so failures surface as an error notification, never a throw. */
 function guard(
   name: string,
@@ -588,6 +633,12 @@ export default function harness2(pi: ExtensionAPI, options: Harness2Options = {}
   pi.registerCommand("h2:report", {
     description: "harness²: (re)write a run's report — \"[<task-slug>/]<runid>\"",
     handler: guard("h2:report", async (args, ctx) => cmdReport(stateDir, args, ctx)),
+  });
+  pi.registerCommand("h2:publish", {
+    description:
+      "harness²: publish a task's stored lessons as a doc (opt-in, writes outside the " +
+      'state dir) — "[<task-slug>/]<runid>"',
+    handler: guard("h2:publish", async (args, ctx) => cmdPublish(stateDir, args, deps, ctx)),
   });
   pi.registerTool({
     name: "h2_run",

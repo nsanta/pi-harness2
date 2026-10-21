@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import harness2, {
   newRunId,
@@ -10,7 +19,7 @@ import harness2, {
   runHarness,
 } from "../src/extension.ts";
 import type { HarnessDeps } from "../src/extension.ts";
-import { Library } from "../src/library.ts";
+import { emitLesson, Library } from "../src/library.ts";
 import type { ModeResult, RunInput } from "../src/recursion.ts";
 import { readTree, writeTree } from "../src/tree.ts";
 import type { Tree } from "../src/types.ts";
@@ -135,12 +144,13 @@ test("parseRunArgs splits the quoted task from --k/--mode flags", () => {
   assert.throws(() => parseRunArgs('"t" --mode both'), /--mode/);
 });
 
-test("the factory registers exactly five commands and one tool", () => {
+test("the factory registers exactly six commands and one tool", () => {
   const pi = fakePi();
   harness2(asPi(pi));
   assert.deepEqual([...pi.commands.keys()].sort(), [
     "h2:adopt",
     "h2:init",
+    "h2:publish",
     "h2:report",
     "h2:run",
     "h2:status",
@@ -491,4 +501,92 @@ test("the h2_run tool reports failures with isError instead of throwing", async 
   assert.equal(result.isError, true);
   assert.equal(result.details.ok, false);
   assert.ok(result.content[0]!.text.includes("h2_run failed"));
+});
+
+/** A docs root OUTSIDE the state directory, plus a stateDir config pointing at it: keeps
+ * the publish tests from ever writing into the repo's real docs/ tree. */
+function publishSetup(stateDir: string): string {
+  const docsRoot = mkdtempSync(join(tmpdir(), "h2-docs-"));
+  writeFileSync(join(stateDir, "config.json"), JSON.stringify({publish: {docsDir: docsRoot}}));
+  return docsRoot;
+}
+
+test("h2:publish writes the stored lesson under <docsDir>/harness2", async () => {
+  const pi = fakePi();
+  const stateDir = tempState();
+  const docsRoot = publishSetup(stateDir);
+  try {
+    mkdirSync(join(stateDir, "runs", "demo", "r-x"), {recursive: true});
+    new Library(stateDir).add({
+      taskSlug: "demo",
+      tree: SEED,
+      lessons: emitLesson({taskSlug: "demo", runId: "p-1", verdict: "pass", body: "# lesson"}),
+      summary: "demo",
+    });
+    harness2(asPi(pi), {stateDir});
+    const ctx = fakeCtx();
+    await pi.commands.get("h2:publish")!.handler("demo/r-x", ctx);
+    const target = join(docsRoot, "harness2", "demo.md");
+    const written = readFileSync(target, "utf8");
+    assert.ok(written.startsWith("---\ntype: doc\n"));
+    assert.ok(written.includes("resource: harness2-lessons-demo"));
+    assert.ok(written.includes('by: "h2:run/p-1"'));
+    assert.ok(written.endsWith("# lesson\n"));
+    const note = ctx.notifications.at(-1)!;
+    assert.equal(note.level, "info");
+    assert.ok(note.message.includes(target));
+    assert.ok(note.message.includes("machine-confirmed"));
+  } finally {
+    rmSync(docsRoot, {recursive: true, force: true});
+  }
+});
+
+test("h2:publish reports the unverified tier when the stored lesson has no verifier", async () => {
+  const pi = fakePi();
+  const stateDir = tempState();
+  const docsRoot = publishSetup(stateDir);
+  try {
+    mkdirSync(join(stateDir, "runs", "shaky", "r-y"), {recursive: true});
+    new Library(stateDir).add({
+      taskSlug: "shaky",
+      tree: SEED,
+      lessons: emitLesson({taskSlug: "shaky", runId: "p-2", verdict: "partial", body: "b"}),
+      summary: "shaky",
+    });
+    harness2(asPi(pi), {stateDir});
+    const ctx = fakeCtx();
+    await pi.commands.get("h2:publish")!.handler("r-y", ctx);
+    assert.ok(readFileSync(join(docsRoot, "harness2", "shaky.md"), "utf8").startsWith("---\n"));
+    const note = ctx.notifications.at(-1)!;
+    assert.equal(note.level, "info");
+    assert.ok(note.message.includes("unverified"));
+  } finally {
+    rmSync(docsRoot, {recursive: true, force: true});
+  }
+});
+
+test("h2:publish without a stored lesson errors and writes nothing", async () => {
+  const pi = fakePi();
+  const stateDir = tempState();
+  const docsRoot = publishSetup(stateDir);
+  try {
+    mkdirSync(join(stateDir, "runs", "old-task", "r-old"), {recursive: true});
+    harness2(asPi(pi), {stateDir});
+    const ctx = fakeCtx();
+    await pi.commands.get("h2:publish")!.handler("r-old", ctx);
+    const note = ctx.notifications.at(-1)!;
+    assert.equal(note.level, "error");
+    assert.ok(note.message.includes("re-run h2:run"));
+    assert.ok(!existsSync(join(docsRoot, "harness2")), "nothing is written without a lesson");
+  } finally {
+    rmSync(docsRoot, {recursive: true, force: true});
+  }
+});
+
+test("independence: no src file references the consumer package (grep-clean)", () => {
+  const srcDir = fileURLToPath(new URL("../src", import.meta.url));
+  for (const name of readdirSync(srcDir).filter((n) => n.endsWith(".ts"))) {
+    const text = readFileSync(join(srcDir, name), "utf8");
+    assert.doesNotMatch(text, /okf[_-]?god/i, `${name} must not reference the consumer`);
+  }
 });

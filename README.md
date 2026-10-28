@@ -15,6 +15,9 @@ result with one command.
 - **Compose** — the judged candidates are anonymized and merged into one final tree.
 - **Remember** — distilled lessons are stored in a per-task library for future runs.
 
+Each run passes up to three recently saved lessons into the next proposal and composition
+step (4,000 characters per lesson). These are prior run evidence, not instructions.
+
 ## Install
 
 ```bash

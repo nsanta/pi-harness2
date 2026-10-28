@@ -118,11 +118,22 @@ export async function runHarness(
   const k = input.k ?? config.k;
   const runId = deps.newRunId();
   const taskSlug = input.taskSlug ?? slugify(input.task);
+  const library = new Library(stateDir);
+  const experience = library.entries()
+    .sort((a, b) => b.created.localeCompare(a.created))
+    .slice(0, 3)
+    .map((entry) => {
+      const lesson = library.lessonsOf(entry.taskSlug);
+      return lesson ? `## ${entry.taskSlug}\n${lesson.slice(0, 4000)}` : "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
   const result = await deps.runMode(mode, {
     task: input.task,
     taskSlug,
     k,
     baseTree,
+    experience: experience || undefined,
     stateDir,
     models: {channel: config.channelModel},
     wallSeconds: config.wallSeconds,

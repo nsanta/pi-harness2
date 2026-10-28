@@ -175,6 +175,7 @@ test("runHarness archives report.md, stages.json and final/ under runs/<slug>/<r
   assert.equal(input.taskSlug, "do-x");
   assert.equal(input.k, 2);
   assert.deepEqual(input.baseTree, SEED);
+  assert.equal(input.experience, undefined);
   assert.deepEqual(input.models, {channel: ""});
   assert.equal(input.wallSeconds, 900);
   assert.equal(input.piBin, "pi");
@@ -189,6 +190,26 @@ test("runHarness archives report.md, stages.json and final/ under runs/<slug>/<r
   const archived = JSON.parse(readFileSync(join(runDir, "stages.json"), "utf8")) as {ok: boolean};
   assert.equal(archived.ok, true);
   assert.ok(!existsSync(join(stateDir, "runs", "r-20251020-cafe")));
+});
+
+test("runHarness passes saved lessons from earlier tasks into the recursion engine", async () => {
+  const stateDir = tempState();
+  await seedHarness(stateDir, SEED);
+  new Library(stateDir).add({
+    taskSlug: "earlier-task",
+    tree: SEED,
+    lessons: emitLesson({
+      taskSlug: "earlier-task",
+      runId: "probe-1",
+      verdict: "pass",
+      body: "Check the failing test before editing.",
+    }),
+    summary: "test-first repair",
+  });
+  const {deps, captured} = runDeps();
+  await runHarness({task: "different task", stateDir}, deps);
+  assert.match(captured()!.experience!, /earlier-task/);
+  assert.match(captured()!.experience!, /Check the failing test before editing/);
 });
 
 test("runHarness refuses to run without a harness tree and points at h2:init", async () => {

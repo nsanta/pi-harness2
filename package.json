@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test \"test/*.test.ts\""
+    "test": "node --experimental-strip-types --test \"test/*.test.ts\""
   },
   "engines": {
     "node": ">=22"

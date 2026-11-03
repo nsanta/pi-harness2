@@ -18,6 +18,11 @@ import type { Tree } from "../src/types.ts";
 
 const STUB = fileURLToPath(new URL("./fixtures/stub-pi.mjs", import.meta.url));
 
+// The stub is executed through its shebang, so Windows cannot spawn it directly. The case
+// that needs it is skipped there instead of left failing; everything else still runs.
+const stubSkip =
+  process.platform === "win32" ? "the offline stub is a POSIX shebang script" : false;
+
 function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
 }
@@ -173,7 +178,7 @@ test("renderTrajectory falls back when nothing parses", () => {
     "(no parseable events in trajectory)");
 });
 
-test("runProbe captures the stub stream offline and returns the probe artifacts", async () => {
+test("runProbe captures the stub stream offline and returns the probe artifacts", { skip: stubSkip }, async () => {
   const ws = tempDir("h2-probe-");
   try {
     writeFileSync(join(ws, "systemprompt.md"), "sp");

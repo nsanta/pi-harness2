@@ -5,7 +5,12 @@ import { callChannel, parsePiJson } from "../src/channel.ts";
 
 const STUB = fileURLToPath(new URL("./fixtures/stub-pi.mjs", import.meta.url));
 
-test("callChannel parses the stub assistant JSON and reports cost", async () => {
+// The stub is executed through its shebang, so Windows cannot spawn it directly. The cases
+// that need it are skipped there instead of left failing; everything else still runs.
+const stubSkip =
+  process.platform === "win32" ? "the offline stub is a POSIX shebang script" : false;
+
+test("callChannel parses the stub assistant JSON and reports cost", { skip: stubSkip }, async () => {
   const reply = await callChannel({
     mission: "return the edits json",
     system: "you are a proposer",
@@ -21,7 +26,7 @@ test("callChannel parses the stub assistant JSON and reports cost", async () => 
   assert.ok(reply.raw.includes('"type":"tool_execution_start"'));
 });
 
-test("callChannel retries once on a failing channel and reports attempts", async () => {
+test("callChannel retries once on a failing channel and reports attempts", { skip: stubSkip }, async () => {
   process.env.STUB_PI_FAIL = "1";
   try {
     const reply = await callChannel({

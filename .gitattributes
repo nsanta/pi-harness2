@@ -1,0 +1,4 @@
+# The offline `pi` stub is executed by its shebang (`#!/usr/bin/env node`), so a
+# checkout that normalizes it to CRLF makes the shebang read `node\r`, which no
+# /usr/bin/env can find. Pin it to LF on every platform.
+test/fixtures/*.mjs text eol=lf
